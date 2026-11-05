@@ -4,16 +4,20 @@
  android:versionName="1.0"
  package="za.co.pysoft.android_test_app">
 
+ <uses-sdk
+  android:minSdkVersion="30"
+  android:targetSdkVersion="30" />
+
  <!--android:allowBackups="false"-->
  <!--android:fullBackupContent="false"-->
  <!--android:icon="@mipmap/icon"-->
  <application
-  android:label="test app"
-  android:hasCode="false">
+  android:label="@string/app_name"
+  android:hasCode="true">
 
   <activity
-   android:name="android.app.NativeActivity"
-   android:configChanges="orientation|keyboardHidden"
+   android:name="org.odin_lang.OdinActivity"
+   android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode"
    android:exported="true">
 
    <meta-data
