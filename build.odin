@@ -25,36 +25,13 @@ main :: proc() {
 	ensure(run_cmd({
 		"odin", "build",
 		"src/",
+		"-o:speed",
 		"-out:build/lib/arm64-v8a/libandroid-test-app.so",
 		"-build-mode:shared",
 		"-target=linux_arm64",
 		"-subtarget:android",
 		"-minimum-os-version:30",
 	}))
-
-	/*ensure(run_cmd({
-		fmt.aprintf("{}/build-tools/36.0.0/aapt", android_sdk_root), "package",
-		"-M", "AndroidManifest.xml",
-		"-I", fmt.aprintf("{}/platforms/android-16/android.jar", android_sdk_root),
-		"-S", "res",
-		"-F", "build/unaligned-android-test-app.apk",
-		"build/",
-	}))
-
-	ensure(run_cmd({
-		fmt.aprintf("{}/build-tools/36.0.0/zipalign", android_sdk_root),
-		"4",
-		"build/unaligned-android-test-app.apk",
-		"build/unsigned-android-test-app.apk",
-	}))
-
-	ensure(run_cmd({
-		fmt.aprintf("{}/build-tools/36.0.0/apksigner", android_sdk_root), "sign",
-		"--ks", fmt.aprintf("{}/.android/debug.keystore", home),
-		"--ks-key-alias=androiddebugkey",
-		"--out", "out/android-test-app.apk",
-		"build/unsigned-android-test-app.apk",
-	}, enable_stdin=true))*/
 
 	ensure(run_cmd({
 		"odin", "bundle", "android",
