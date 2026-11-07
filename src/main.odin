@@ -13,14 +13,26 @@ import glue "core:sys/android/native_app_glue"
 // ~/Android/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/android/
 
 Color :: [4]u8
-Android_Color :: struct #packed { // `R8G8B8A8_UNORM`
+Android_Color :: struct #packed {
+	r: u8,
+	g: u8,
+	b: u8,
+	a: u8,
+}
+/*Android_Color :: struct #packed { // `R8G8B8A8_UNORM`
 	a: u8,
 	b: u8,
 	g: u8,
 	r: u8,
-}
+}*/
 droidify :: #force_inline proc(c: Color) -> Android_Color {
-	return transmute(Android_Color) c.abgr
+	//return transmute(Android_Color) c.abgr
+	return transmute(Android_Color) c
+}
+
+Rectangle :: struct {
+	x, y: int,
+	width, height: int,
 }
 
 Canvas :: struct {
@@ -56,36 +68,82 @@ canvas_resize :: proc(canvas: ^Canvas, width, height: int, allocator := context.
 		canvas.data = new_data
 	}
 }
-canvas_draw_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color) {
-	canvas.data[y*canvas.stride + x] = droidify(color)
+canvas_put_pixel :: #force_inline proc(canvas: ^Canvas, x, y: int, color: Color) {
+	canvas_put_pixel_raw(canvas, x, y, droidify(color))
 }
-canvas_draw_pixel_raw :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) {
+canvas_put_pixel_raw :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) {
 	canvas.data[y*canvas.stride + x] = color
 }
-canvas_draw_rect :: proc(canvas: ^Canvas, x1, y1, x2, y2: int, color: Color) {
+canvas_put_pixel_raw_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) #no_bounds_check {
+	canvas.data[y*canvas.stride + x] = color
+}
+canvas_draw_pixel :: #force_inline proc(canvas: ^Canvas, x, y: int, color: Color) {
+	canvas_draw_pixel_raw(canvas, x, y, droidify(color))
+	
+}
+canvas_draw_pixel_raw :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) {
+	if color.a == 255 do canvas.data[y*canvas.stride + x] = color
+	else {
+		old_color := canvas.data[y*canvas.stride + x]
+		new_color := Android_Color {
+			r = old_color.r*(255-color.a) + color.r*color.a,
+			g = old_color.g*(255-color.a) + color.g*color.a,
+			b = old_color.b*(255-color.a) + color.b*color.a,
+			a = old_color.a + (255-old_color.a)*color.a/255,
+		}
+		canvas.data[y*canvas.stride + x] = new_color
+	}
+}
+canvas_draw_pixel_raw_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) #no_bounds_check {
+	if color.a == 255 do canvas.data[y*canvas.stride + x] = color
+	else {
+		old_color := canvas.data[y*canvas.stride + x]
+		new_color := Android_Color {
+			r = old_color.r*(255-color.a) + color.r*color.a,
+			g = old_color.g*(255-color.a) + color.g*color.a,
+			b = old_color.b*(255-color.a) + color.b*color.a,
+			a = old_color.a + (255-old_color.a)*color.a/255,
+		}
+		canvas.data[y*canvas.stride + x] = new_color
+	}
+}
+canvas_rect_outline :: proc(canvas: ^Canvas, rectangle: Rectangle, color: Color) {
 	// TODO: handle out of bounds?
-	if x1 < 0 || x1 >= canvas.width do return
-	if y1 < 0 || y1 >= canvas.height do return
-	if x2 < 0 || x2 >= canvas.width do return
-	if y2 < 0 || y2 >= canvas.height do return
-
-	if x1 > x2 {
-		canvas_draw_rect(canvas, x2, y1, x1, y2, color)
-	}
-	if y1 > y2 {
-		canvas_draw_rect(canvas, x1, y2, x2, y1, color)
-	}
+	ensure(rectangle.width >= 0 && rectangle.height >= 0)
+	if rectangle.x < 0 do return
+	if rectangle.y < 0 do return
+	if rectangle.x + rectangle.width > canvas.width do return
+	if rectangle.y + rectangle.height > canvas.height do return
 
 	ac := droidify(color)
 
-	for x in x1..=x2 {
-		#force_inline canvas_draw_pixel_raw(canvas, x, y1, ac)
-		#force_inline canvas_draw_pixel_raw(canvas, x, y2, ac)
+	for x in rectangle.x..<rectangle.x+rectangle.width {
+		#force_inline canvas_draw_pixel_raw(canvas, x, rectangle.y, ac)
+		#force_inline canvas_draw_pixel_raw(canvas, x, rectangle.y+rectangle.height-1, ac)
 	}
-	for y in y1..=y2 {
-		#force_inline canvas_draw_pixel_raw(canvas, x1, y, ac)
-		#force_inline canvas_draw_pixel_raw(canvas, x2, y, ac)
+	for y in rectangle.y..<rectangle.y+rectangle.height {
+		#force_inline canvas_draw_pixel_raw(canvas, rectangle.x, y, ac)
+		#force_inline canvas_draw_pixel_raw(canvas, rectangle.x+rectangle.width-1, y, ac)
 	}
+}
+canvas_rect_fill :: proc(canvas: ^Canvas, rectangle: Rectangle, color: Color) #no_bounds_check {
+	// TODO: handle out of bounds?
+	ensure(rectangle.width >= 0 && rectangle.height >= 0)
+	if rectangle.x < 0 do return
+	if rectangle.y < 0 do return
+	if rectangle.x + rectangle.width > canvas.width do return
+	if rectangle.y + rectangle.height > canvas.height do return
+
+	ac := droidify(color)
+
+	for y in rectangle.y..<rectangle.y+rectangle.height {
+		for x in rectangle.x..<rectangle.x+rectangle.width {
+			#force_inline canvas_draw_pixel_raw_unsafe(canvas, x, y, ac)
+		}
+	}
+}
+canvas_fill :: #force_inline proc(canvas: ^Canvas, color: Color) {
+	canvas_rect_fill(canvas, {0, 0, canvas.width, canvas.height}, color)
 }
 canvas_draw_line :: proc(canvas: ^Canvas, x1, y1, x2, y2: int, color: Color) {
 	// TODO: handle out of bounds?
@@ -173,21 +231,6 @@ canvas_draw_line :: proc(canvas: ^Canvas, x1, y1, x2, y2: int, color: Color) {
 		}
 	}
 }
-canvas_fill :: proc(canvas: ^Canvas, x1, y1, x2, y2: int, color: Color) {
-	if canvas.width == 0 || canvas.height == 0 do return
-
-	ac := droidify(color)
-	x1 := clamp(x1, 0, canvas.width-1)
-	y1 := clamp(y1, 0, canvas.height-1)
-	x2 := clamp(x2, 0, canvas.width-1)
-	y2 := clamp(y2, 0, canvas.height-1)
-
-	for y in y1..=y2 {
-		for x in x1..=x2 {
-			#force_inline canvas_draw_pixel_raw(canvas, x, y, ac)
-		}
-	}
-}
 
 State :: struct {
 	bg_color: Color,
@@ -265,13 +308,16 @@ draw :: proc(app: ^glue.android_app) {
 
 	canvas_resize(&state.canvas, int(buffer.width), int(buffer.height))
 	//fmt.println("drawing:", state.canvas.width, state.canvas.height)
-	canvas_fill(&state.canvas, 0, 0, state.canvas.width-1, state.canvas.height-1, state.bg_color)
+	canvas_fill(&state.canvas, state.bg_color)
+	canvas_rect_fill(&state.canvas, {10,16,64,128}, {0,100,200,255})
+	canvas_rect_outline(&state.canvas, {64,128,256,512}, {})
 	canvas_draw_line(
 		&state.canvas,
 		state.canvas.width/2, state.canvas.height/2,
 		state.last_touch_pos.x, state.last_touch_pos.y,
 		{},//{0,0,0,255},
 	)
+
 	pixels := ([^]Android_Color)(buffer.bits)
 	for y in 0..<state.canvas.height {
 		for x in 0..<state.canvas.width {
