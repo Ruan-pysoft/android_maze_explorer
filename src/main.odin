@@ -86,9 +86,9 @@ canvas_draw_pixel_raw :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) 
 	else {
 		old_color := canvas.data[y*canvas.stride + x]
 		new_color := Android_Color {
-			r = old_color.r*(255-color.a) + color.r*color.a,
-			g = old_color.g*(255-color.a) + color.g*color.a,
-			b = old_color.b*(255-color.a) + color.b*color.a,
+			r = (old_color.r*(255-color.a) + color.r*color.a)/255,
+			g = (old_color.g*(255-color.a) + color.g*color.a)/255,
+			b = (old_color.b*(255-color.a) + color.b*color.a)/255,
 			a = old_color.a + (255-old_color.a)*color.a/255,
 		}
 		canvas.data[y*canvas.stride + x] = new_color
@@ -99,9 +99,9 @@ canvas_draw_pixel_raw_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Android_
 	else {
 		old_color := canvas.data[y*canvas.stride + x]
 		new_color := Android_Color {
-			r = old_color.r*(255-color.a) + color.r*color.a,
-			g = old_color.g*(255-color.a) + color.g*color.a,
-			b = old_color.b*(255-color.a) + color.b*color.a,
+			r = (old_color.r*(255-color.a) + color.r*color.a)/255,
+			g = (old_color.g*(255-color.a) + color.g*color.a)/255,
+			b = (old_color.b*(255-color.a) + color.b*color.a)/255,
 			a = old_color.a + (255-old_color.a)*color.a/255,
 		}
 		canvas.data[y*canvas.stride + x] = new_color
@@ -315,7 +315,7 @@ draw :: proc(app: ^glue.android_app) {
 		&state.canvas,
 		state.canvas.width/2, state.canvas.height/2,
 		state.last_touch_pos.x, state.last_touch_pos.y,
-		{},//{0,0,0,255},
+		{0,25,0,0},//{0,0,0,255},
 	)
 
 	pixels := ([^]Android_Color)(buffer.bits)
