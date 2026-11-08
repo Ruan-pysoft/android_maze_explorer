@@ -13,22 +13,6 @@ import glue "core:sys/android/native_app_glue"
 // ~/Android/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/android/
 
 Color :: [4]u8
-Android_Color :: struct #packed {
-	r: u8,
-	g: u8,
-	b: u8,
-	a: u8,
-}
-/*Android_Color :: struct #packed { // `R8G8B8A8_UNORM`
-	a: u8,
-	b: u8,
-	g: u8,
-	r: u8,
-}*/
-droidify :: #force_inline proc(c: Color) -> Android_Color {
-	//return transmute(Android_Color) c.abgr
-	return transmute(Android_Color) c
-}
 
 Rectangle :: struct {
 	x, y: int,
@@ -39,12 +23,12 @@ Canvas :: struct {
 	width: int,
 	height: int,
 	stride: int,
-	data: []Android_Color,
+	data: []Color,
 }
 
 canvas_make :: proc(width, height, stride: int, allocator := context.allocator) -> Canvas {
 	ensure(width <= stride)
-	return { width, height, stride, make([]Android_Color, stride*height, allocator=allocator) }
+	return { width, height, stride, make([]Color, stride*height, allocator=allocator) }
 }
 canvas_resize :: proc(canvas: ^Canvas, width, height: int, allocator := context.allocator) {
 	if width <= canvas.stride && height <= len(canvas.data)/canvas.stride {
@@ -58,7 +42,7 @@ canvas_resize :: proc(canvas: ^Canvas, width, height: int, allocator := context.
 		canvas.height = height
 		canvas.stride = max(canvas.width, canvas.stride)
 		new_size := canvas.stride*max(canvas.height, old_height)
-		new_data := make([]Android_Color, new_size, allocator=allocator)
+		new_data := make([]Color, new_size, allocator=allocator)
 		for y in 0..<min(old_height, height) {
 			for x in 0..<min(old_width, width) {
 				new_data[y*canvas.stride + x] = canvas.data[y*old_stride + x]
@@ -68,41 +52,34 @@ canvas_resize :: proc(canvas: ^Canvas, width, height: int, allocator := context.
 		canvas.data = new_data
 	}
 }
-canvas_put_pixel :: #force_inline proc(canvas: ^Canvas, x, y: int, color: Color) {
-	canvas_put_pixel_raw(canvas, x, y, droidify(color))
-}
-canvas_put_pixel_raw :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) {
+canvas_put_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color) {
 	canvas.data[y*canvas.stride + x] = color
 }
-canvas_put_pixel_raw_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) #no_bounds_check {
+canvas_put_pixel_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Color) #no_bounds_check {
 	canvas.data[y*canvas.stride + x] = color
 }
-canvas_draw_pixel :: #force_inline proc(canvas: ^Canvas, x, y: int, color: Color) {
-	canvas_draw_pixel_raw(canvas, x, y, droidify(color))
-	
-}
-canvas_draw_pixel_raw :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) {
+canvas_draw_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color) {
 	if color.a == 255 do canvas.data[y*canvas.stride + x] = color
 	else {
 		old_color := canvas.data[y*canvas.stride + x]
-		new_color := Android_Color {
-			r = (old_color.r*(255-color.a) + color.r*color.a)/255,
-			g = (old_color.g*(255-color.a) + color.g*color.a)/255,
-			b = (old_color.b*(255-color.a) + color.b*color.a)/255,
-			a = old_color.a + (255-old_color.a)*color.a/255,
+		new_color := Color {
+			(old_color.r*(255-color.a) + color.r*color.a)/255,
+			(old_color.g*(255-color.a) + color.g*color.a)/255,
+			(old_color.b*(255-color.a) + color.b*color.a)/255,
+			old_color.a + (255-old_color.a)*color.a/255,
 		}
 		canvas.data[y*canvas.stride + x] = new_color
 	}
 }
-canvas_draw_pixel_raw_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Android_Color) #no_bounds_check {
+canvas_draw_pixel_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Color) #no_bounds_check {
 	if color.a == 255 do canvas.data[y*canvas.stride + x] = color
 	else {
 		old_color := canvas.data[y*canvas.stride + x]
-		new_color := Android_Color {
-			r = (old_color.r*(255-color.a) + color.r*color.a)/255,
-			g = (old_color.g*(255-color.a) + color.g*color.a)/255,
-			b = (old_color.b*(255-color.a) + color.b*color.a)/255,
-			a = old_color.a + (255-old_color.a)*color.a/255,
+		new_color := Color {
+			(old_color.r*(255-color.a) + color.r*color.a)/255,
+			(old_color.g*(255-color.a) + color.g*color.a)/255,
+			(old_color.b*(255-color.a) + color.b*color.a)/255,
+			old_color.a + (255-old_color.a)*color.a/255,
 		}
 		canvas.data[y*canvas.stride + x] = new_color
 	}
@@ -115,15 +92,13 @@ canvas_rect_outline :: proc(canvas: ^Canvas, rectangle: Rectangle, color: Color)
 	if rectangle.x + rectangle.width > canvas.width do return
 	if rectangle.y + rectangle.height > canvas.height do return
 
-	ac := droidify(color)
-
 	for x in rectangle.x..<rectangle.x+rectangle.width {
-		#force_inline canvas_draw_pixel_raw(canvas, x, rectangle.y, ac)
-		#force_inline canvas_draw_pixel_raw(canvas, x, rectangle.y+rectangle.height-1, ac)
+		#force_inline canvas_draw_pixel(canvas, x, rectangle.y, color)
+		#force_inline canvas_draw_pixel(canvas, x, rectangle.y+rectangle.height-1, color)
 	}
 	for y in rectangle.y..<rectangle.y+rectangle.height {
-		#force_inline canvas_draw_pixel_raw(canvas, rectangle.x, y, ac)
-		#force_inline canvas_draw_pixel_raw(canvas, rectangle.x+rectangle.width-1, y, ac)
+		#force_inline canvas_draw_pixel(canvas, rectangle.x, y, color)
+		#force_inline canvas_draw_pixel(canvas, rectangle.x+rectangle.width-1, y, color)
 	}
 }
 canvas_rect_fill :: proc(canvas: ^Canvas, rectangle: Rectangle, color: Color) #no_bounds_check {
@@ -134,11 +109,9 @@ canvas_rect_fill :: proc(canvas: ^Canvas, rectangle: Rectangle, color: Color) #n
 	if rectangle.x + rectangle.width > canvas.width do return
 	if rectangle.y + rectangle.height > canvas.height do return
 
-	ac := droidify(color)
-
 	for y in rectangle.y..<rectangle.y+rectangle.height {
 		for x in rectangle.x..<rectangle.x+rectangle.width {
-			#force_inline canvas_draw_pixel_raw_unsafe(canvas, x, y, ac)
+			#force_inline canvas_draw_pixel_unsafe(canvas, x, y, color)
 		}
 	}
 }
@@ -160,29 +133,27 @@ canvas_draw_line :: proc(canvas: ^Canvas, x1, y1, x2, y2: int, color: Color) {
 	dx := x2 - x1
 	dy := y2 - y1
 
-	ac := droidify(color)
-
 	if dx == dy {
 		for i in 0..=dx {
-			#force_inline canvas_draw_pixel_raw(canvas, x1+i, y1+i, ac)
+			#force_inline canvas_draw_pixel(canvas, x1+i, y1+i, color)
 		}
 	} else if dx == -dy {
 		for i in 0..=dx {
-			#force_inline canvas_draw_pixel_raw(canvas, x1+i, y1-i, ac)
+			#force_inline canvas_draw_pixel(canvas, x1+i, y1-i, color)
 		}
 	} else if dx == 0 {
 		if dy > 0 {
 			for y in y1..=y2 {
-				#force_inline canvas_draw_pixel_raw(canvas, x1, y, ac)
+				#force_inline canvas_draw_pixel(canvas, x1, y, color)
 			}
 		} else {
 			for y in y2..=y1 {
-				#force_inline canvas_draw_pixel_raw(canvas, x1, y, ac)
+				#force_inline canvas_draw_pixel(canvas, x1, y, color)
 			}
 		}
 	} else if dy == 0 {
 		for i in 0..=dx {
-			#force_inline canvas_draw_pixel_raw(canvas, x1+i, y1, ac)
+			#force_inline canvas_draw_pixel(canvas, x1+i, y1, color)
 		}
 	} else if dx > abs(dy) {
 		y_offset := dy > 0 ? 1 : -1
@@ -192,7 +163,7 @@ canvas_draw_line :: proc(canvas: ^Canvas, x1, y1, x2, y2: int, color: Color) {
 
 		y := y1
 		for x in x1..=x2 {
-			#force_inline canvas_draw_pixel_raw(canvas, x, y, ac)
+			#force_inline canvas_draw_pixel(canvas, x, y, color)
 			if D > 0 {
 				y += y_offset
 				D += 2*(dy - dx)
@@ -209,7 +180,7 @@ canvas_draw_line :: proc(canvas: ^Canvas, x1, y1, x2, y2: int, color: Color) {
 		if pos_slope {
 			x := x1
 			for y in y1..=y2 {
-				#force_inline canvas_draw_pixel_raw(canvas, x, y, ac)
+				#force_inline canvas_draw_pixel(canvas, x, y, color)
 				if D > 0 {
 					x += 1
 					D += 2*(dx - dy)
@@ -220,7 +191,7 @@ canvas_draw_line :: proc(canvas: ^Canvas, x1, y1, x2, y2: int, color: Color) {
 		} else {
 			x := x2
 			for y in y2..=y1 {
-				#force_inline canvas_draw_pixel_raw(canvas, x, y, ac)
+				#force_inline canvas_draw_pixel(canvas, x, y, color)
 				if D > 0 {
 					x -= 1
 					D += 2*(dx - dy)
@@ -318,7 +289,7 @@ draw :: proc(app: ^glue.android_app) {
 		{0,25,0,0},//{0,0,0,255},
 	)
 
-	pixels := ([^]Android_Color)(buffer.bits)
+	pixels := ([^]Color)(buffer.bits)
 	for y in 0..<state.canvas.height {
 		for x in 0..<state.canvas.width {
 			pixels[y*int(buffer.stride) + x] = state.canvas.data[y*state.canvas.stride + x]
