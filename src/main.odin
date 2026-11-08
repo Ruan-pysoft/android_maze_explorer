@@ -58,30 +58,34 @@ canvas_put_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color) {
 canvas_put_pixel_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Color) #no_bounds_check {
 	canvas.data[y*canvas.stride + x] = color
 }
+color_blend :: #force_inline proc(bg_color, fg_color: Color) -> Color {
+	bgi := cast([4]int)bg_color
+	fgi := cast([4]int)fg_color
+	return {
+		u8((bgi.r*(255-fgi.a) + fgi.r*fgi.a)/255),
+		u8((bgi.g*(255-fgi.a) + fgi.g*fgi.a)/255),
+		u8((bgi.b*(255-fgi.a) + fgi.b*fgi.a)/255),
+		bg_color.a + u8((255-bgi.a)*fgi.a/255),
+	}
+}
 canvas_draw_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color) {
 	if color.a == 255 do canvas.data[y*canvas.stride + x] = color
+	else if color.a == 0 do return
 	else {
-		old_color := canvas.data[y*canvas.stride + x]
-		new_color := Color {
-			(old_color.r*(255-color.a) + color.r*color.a)/255,
-			(old_color.g*(255-color.a) + color.g*color.a)/255,
-			(old_color.b*(255-color.a) + color.b*color.a)/255,
-			old_color.a + (255-old_color.a)*color.a/255,
-		}
-		canvas.data[y*canvas.stride + x] = new_color
+		canvas.data[y*canvas.stride + x] = color_blend(
+			canvas.data[y*canvas.stride + x],
+			color,
+		)
 	}
 }
 canvas_draw_pixel_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Color) #no_bounds_check {
 	if color.a == 255 do canvas.data[y*canvas.stride + x] = color
+	else if color.a == 0 do return
 	else {
-		old_color := canvas.data[y*canvas.stride + x]
-		new_color := Color {
-			(old_color.r*(255-color.a) + color.r*color.a)/255,
-			(old_color.g*(255-color.a) + color.g*color.a)/255,
-			(old_color.b*(255-color.a) + color.b*color.a)/255,
-			old_color.a + (255-old_color.a)*color.a/255,
-		}
-		canvas.data[y*canvas.stride + x] = new_color
+		canvas.data[y*canvas.stride + x] = color_blend(
+			canvas.data[y*canvas.stride + x],
+			color,
+		)
 	}
 }
 canvas_rect_outline :: proc(canvas: ^Canvas, rectangle: Rectangle, color: Color) {
@@ -281,12 +285,12 @@ draw :: proc(app: ^glue.android_app) {
 	//fmt.println("drawing:", state.canvas.width, state.canvas.height)
 	canvas_fill(&state.canvas, state.bg_color)
 	canvas_rect_fill(&state.canvas, {10,16,64,128}, {0,100,200,255})
-	canvas_rect_outline(&state.canvas, {64,128,256,512}, {})
+	canvas_rect_outline(&state.canvas, {64,128,256,512}, {0,0,0,255})
 	canvas_draw_line(
 		&state.canvas,
 		state.canvas.width/2, state.canvas.height/2,
 		state.last_touch_pos.x, state.last_touch_pos.y,
-		{0,25,0,0},//{0,0,0,255},
+		{0,0,0,255},
 	)
 
 	pixels := ([^]Color)(buffer.bits)
