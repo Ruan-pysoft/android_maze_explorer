@@ -382,9 +382,10 @@ draw :: proc(app: ^glue.android_app) {
 	trans := linalg.matrix4_translate_f64({-0.5, 4, -3})
 	rot_y := linalg.matrix4_rotate_f64(theta_y, {0,1,0})
 	rot_x := linalg.matrix4_rotate_f64(theta_x, {1,0,0})
-	view := linalg.matrix4_look_at_f64({0,0,-16}, {-0.5, 4, -3}, {0,1,0})
+	view := linalg.matrix4_look_at_f64({0,0,-12}, {-0.5, 4, -3}, {0,1,0})
 	proj := linalg.matrix4_perspective_f64(math.TAU/6, f64(state.canvas.width)/f64(state.canvas.height), 1, 1000)
 	final_mat := proj*view*trans*rot_x*rot_y
+	final_no_rot := proj*view*trans
 
 	for triag, i in cube {
 		triag_4d := [3][4]f64 {
@@ -419,9 +420,9 @@ draw :: proc(app: ^glue.android_app) {
 			{ triag[2].x, triag[2].y, triag[2].z, 1 },
 		}
 		projected := [3][4]f64 {
-			final_mat*triag_4d[0],
-			final_mat*triag_4d[1],
-			final_mat*triag_4d[2],
+			final_no_rot*triag_4d[0],
+			final_no_rot*triag_4d[1],
+			final_no_rot*triag_4d[2],
 		}
 		transformed := [3][3]f64 {
 			projected[0].xyz/projected[0].w,
