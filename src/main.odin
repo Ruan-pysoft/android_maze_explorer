@@ -271,6 +271,19 @@ on_input_event :: proc(app: ^glue.android_app, event: ^android.AInputEvent) -> i
 	return 1
 }
 
+floor := [?][3][3]f64 {
+	{
+		{-2.0, 2.0, 2.0 },
+		{ 2.0, 2.0, 2.0 },
+		{ 2.0, 2.0,-2.0 },
+	},
+	{
+		{-2.0, 2.0, 2.0 },
+		{ 2.0, 2.0,-2.0 },
+		{-2.0, 2.0,-2.0 },
+	},
+}
+
 cube := [?][3][3]f64 {
 	{ // front face
 		{ 1.0, 1.0,-1.0 },
@@ -394,11 +407,33 @@ draw :: proc(app: ^glue.android_app) {
 		x1, y1 := float_to_screen(w, h, transformed[1].x, transformed[1].y)
 		x2, y2 := float_to_screen(w, h, transformed[2].x, transformed[2].y)
 		screen := [3][2]int {{x0,y0},{x1,y1},{x2,y2}}
-		log.info(triag_4d, transformed, screen)
 		r := u8(20 + 200*i/(len(cube)-1))
 		g := u8(200 - 200*i/(len(cube)-1))
 		if i < 2 do canvas_outline_triangle(&state.canvas, screen, state.bg_color)
 		else do canvas_outline_triangle(&state.canvas, screen, {r, g, 150, 255})
+	}
+	for triag in floor {
+		triag_4d := [3][4]f64 {
+			{ triag[0].x, triag[0].y, triag[0].z, 1 },
+			{ triag[1].x, triag[1].y, triag[1].z, 1 },
+			{ triag[2].x, triag[2].y, triag[2].z, 1 },
+		}
+		projected := [3][4]f64 {
+			final_mat*triag_4d[0],
+			final_mat*triag_4d[1],
+			final_mat*triag_4d[2],
+		}
+		transformed := [3][3]f64 {
+			projected[0].xyz/projected[0].w,
+			projected[1].xyz/projected[1].w,
+			projected[2].xyz/projected[2].w,
+		}
+		w, h := state.canvas.width, state.canvas.height
+		x0, y0 := float_to_screen(w, h, transformed[0].x, transformed[0].y)
+		x1, y1 := float_to_screen(w, h, transformed[1].x, transformed[1].y)
+		x2, y2 := float_to_screen(w, h, transformed[2].x, transformed[2].y)
+		screen := [3][2]int {{x0,y0},{x1,y1},{x2,y2}}
+		canvas_outline_triangle(&state.canvas, screen, {255,255,255,255})
 	}
 
 	canvas_rect_fill(&state.canvas, {10,16,64,128}, {0,100,200,255})
