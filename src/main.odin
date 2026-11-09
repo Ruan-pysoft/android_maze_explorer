@@ -2,6 +2,8 @@ package android_test_app
 
 import "core:fmt"
 import "core:log"
+import "core:math"
+import "core:math/linalg"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -269,6 +271,76 @@ on_input_event :: proc(app: ^glue.android_app, event: ^android.AInputEvent) -> i
 	return 1
 }
 
+cube := [?][3][3]f64 {
+	{ // front face
+		{ 1.0, 1.0,-1.0 },
+		{ 1.0,-1.0,-1.0 },
+		{-1.0, 1.0,-1.0 },
+	},
+	{
+		{-1.0, 1.0,-1.0 },
+		{ 1.0,-1.0,-1.0 },
+		{-1.0,-1.0,-1.0 },
+	},
+	{ // back face
+		{ 1.0, 1.0, 1.0 },
+		{-1.0, 1.0, 1.0 },
+		{ 1.0,-1.0, 1.0 },
+	},
+	{
+		{-1.0, 1.0, 1.0 },
+		{-1.0,-1.0, 1.0 },
+		{ 1.0,-1.0, 1.0 },
+	},
+	{ // right face
+		{ 1.0, 1.0,-1.0 },
+		{ 1.0, 1.0, 1.0 },
+		{ 1.0,-1.0,-1.0 },
+	},
+	{
+		{ 1.0,-1.0,-1.0 },
+		{ 1.0, 1.0, 1.0 },
+		{ 1.0,-1.0, 1.0 },
+	},
+	{ // left face
+		{-1.0, 1.0,-1.0 },
+		{-1.0,-1.0,-1.0 },
+		{-1.0, 1.0, 1.0 },
+	},
+	{
+		{-1.0,-1.0,-1.0 },
+		{-1.0,-1.0, 1.0 },
+		{-1.0, 1.0, 1.0 },
+	},
+	{ // top face
+		{-1.0,-1.0,-1.0 },
+		{ 1.0,-1.0,-1.0 },
+		{ 1.0,-1.0, 1.0 },
+	},
+	{
+		{-1.0,-1.0,-1.0 },
+		{ 1.0,-1.0, 1.0 },
+		{-1.0,-1.0, 1.0 },
+	},
+	{ // bottom face
+		{-1.0, 1.0,-1.0 },
+		{ 1.0, 1.0, 1.0 },
+		{ 1.0, 1.0,-1.0 },
+	},
+	{
+		{-1.0, 1.0,-1.0 },
+		{-1.0, 1.0, 1.0 },
+		{ 1.0, 1.0, 1.0 },
+	},
+}
+
+canvas_outline_triangle :: proc(canvas: ^Canvas, triangle: [3][2]int, color: Color) {
+	// TODO: only render counterclockwise triangles?
+	canvas_draw_line(canvas, triangle[0].x, triangle[0].y, triangle[1].x, triangle[1].y, color)
+	canvas_draw_line(canvas, triangle[1].x, triangle[1].y, triangle[2].x, triangle[2].y, color)
+	canvas_draw_line(canvas, triangle[2].x, triangle[2].y, triangle[0].x, triangle[0].y, color)
+}
+
 draw :: proc(app: ^glue.android_app) {
 	if app.window == nil do return
 
@@ -281,9 +353,50 @@ draw :: proc(app: ^glue.android_app) {
 	}
 	defer android.ANativeWindow_unlockAndPost(app.window)
 
+	float_to_screen :: proc(w,h:int, xf,yf: f64) -> (xi,yi: int) {
+		// TODO: 1 -> w or h, it should map to w-1 or h-1?
+		return int((xf+1)/2*f64(w)), int((yf+1)/2*f64(h))
+	}
+
 	canvas_resize(&state.canvas, int(buffer.width), int(buffer.height))
 	//fmt.println("drawing:", state.canvas.width, state.canvas.height)
 	canvas_fill(&state.canvas, state.bg_color)
+
+	pos_ratio := ([2]f64)(state.last_touch_pos)/[2]f64{f64(state.canvas.width),f64(state.canvas.height)}
+	theta_y := (-math.TAU/8)*(1-pos_ratio.x) + (math.TAU/8)*pos_ratio.x
+	theta_x := (-math.TAU/8)*(1-pos_ratio.y) + (math.TAU/8)*pos_ratio.y
+
+	small := linalg.matrix4_scale_f64({.25, .25, .25})
+	trans := linalg.matrix4_translate_f64({-0.5, -10, 2})
+	rot_y := linalg.matrix4_rotate_f64(theta_y, {0,1,0})
+	rot_x := linalg.matrix4_rotate_f64(-theta_x, {1,0,0})
+	view := linalg.matrix4_look_at_f64({0,0,16}, {-0.5, -10, 2}, {0,0,1})
+	proj := linalg.matrix4_perspective_f64(math.TAU/3, 1, 1, 128) // I have no freaking clue what's going on ;.;
+	final_mat := trans*rot_y*rot_x*view*proj // I think??
+	final_mat = small*rot_x*rot_y
+
+	for triag, i in cube {
+		triag_4d := [3][4]f64 {
+			{ triag[0].x, triag[0].y, triag[0].z, 1 },
+			{ triag[1].x, triag[1].y, triag[1].z, 1 },
+			{ triag[2].x, triag[2].y, triag[2].z, 1 },
+		}
+		transformed := [3][3]f64 {
+			(final_mat*triag_4d[0]).xyz,
+			(final_mat*triag_4d[1]).xyz,
+			(final_mat*triag_4d[2]).xyz,
+		}
+		w, h := state.canvas.width, state.canvas.height
+		x0, y0 := float_to_screen(w, h, transformed[0].x, transformed[0].y)
+		x1, y1 := float_to_screen(w, h, transformed[1].x, transformed[1].y)
+		x2, y2 := float_to_screen(w, h, transformed[2].x, transformed[2].y)
+		screen := [3][2]int {{x0,y0},{x1,y1},{x2,y2}}
+		log.info(triag_4d, transformed, screen)
+		r := u8(20 + 200*i/(len(cube)-1))
+		g := u8(200 - 200*i/(len(cube)-1))
+		canvas_outline_triangle(&state.canvas, screen, {r, g, 150, 255})
+	}
+
 	canvas_rect_fill(&state.canvas, {10,16,64,128}, {0,100,200,255})
 	canvas_rect_outline(&state.canvas, {64,128,256,512}, {0,0,0,255})
 	canvas_draw_line(
