@@ -360,20 +360,18 @@ draw :: proc(app: ^glue.android_app) {
 
 	canvas_resize(&state.canvas, int(buffer.width), int(buffer.height))
 	//fmt.println("drawing:", state.canvas.width, state.canvas.height)
-	canvas_fill(&state.canvas, state.bg_color)
+	canvas_fill(&state.canvas, {150,150,150,255}/*state.bg_color*/)
 
 	pos_ratio := ([2]f64)(state.last_touch_pos)/[2]f64{f64(state.canvas.width),f64(state.canvas.height)}
 	theta_y := (-math.TAU/8)*(1-pos_ratio.x) + (math.TAU/8)*pos_ratio.x
 	theta_x := (-math.TAU/8)*(1-pos_ratio.y) + (math.TAU/8)*pos_ratio.y
 
-	small := linalg.matrix4_scale_f64({.25, .25, .25})
-	trans := linalg.matrix4_translate_f64({-0.5, -10, 2})
+	trans := linalg.matrix4_translate_f64({-0.5, 4, -3})
 	rot_y := linalg.matrix4_rotate_f64(theta_y, {0,1,0})
-	rot_x := linalg.matrix4_rotate_f64(-theta_x, {1,0,0})
-	view := linalg.matrix4_look_at_f64({0,0,16}, {-0.5, -10, 2}, {0,0,1})
-	proj := linalg.matrix4_perspective_f64(math.TAU/3, 1, 1, 128) // I have no freaking clue what's going on ;.;
-	final_mat := trans*rot_y*rot_x*view*proj // I think??
-	final_mat = small*rot_x*rot_y
+	rot_x := linalg.matrix4_rotate_f64(theta_x, {1,0,0})
+	view := linalg.matrix4_look_at_f64({0,0,-16}, {-0.5, 4, -3}, {0,1,0})
+	proj := linalg.matrix4_perspective_f64(math.TAU/6, f64(state.canvas.width)/f64(state.canvas.height), 1, 1000)
+	final_mat := proj*view*trans*rot_x*rot_y
 
 	for triag, i in cube {
 		triag_4d := [3][4]f64 {
@@ -381,10 +379,15 @@ draw :: proc(app: ^glue.android_app) {
 			{ triag[1].x, triag[1].y, triag[1].z, 1 },
 			{ triag[2].x, triag[2].y, triag[2].z, 1 },
 		}
+		projected := [3][4]f64 {
+			final_mat*triag_4d[0],
+			final_mat*triag_4d[1],
+			final_mat*triag_4d[2],
+		}
 		transformed := [3][3]f64 {
-			(final_mat*triag_4d[0]).xyz,
-			(final_mat*triag_4d[1]).xyz,
-			(final_mat*triag_4d[2]).xyz,
+			projected[0].xyz/projected[0].w,
+			projected[1].xyz/projected[1].w,
+			projected[2].xyz/projected[2].w,
 		}
 		w, h := state.canvas.width, state.canvas.height
 		x0, y0 := float_to_screen(w, h, transformed[0].x, transformed[0].y)
@@ -394,7 +397,8 @@ draw :: proc(app: ^glue.android_app) {
 		log.info(triag_4d, transformed, screen)
 		r := u8(20 + 200*i/(len(cube)-1))
 		g := u8(200 - 200*i/(len(cube)-1))
-		canvas_outline_triangle(&state.canvas, screen, {r, g, 150, 255})
+		if i < 2 do canvas_outline_triangle(&state.canvas, screen, state.bg_color)
+		else do canvas_outline_triangle(&state.canvas, screen, {r, g, 150, 255})
 	}
 
 	canvas_rect_fill(&state.canvas, {10,16,64,128}, {0,100,200,255})
