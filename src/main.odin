@@ -26,11 +26,12 @@ Canvas :: struct {
 	height: int,
 	stride: int,
 	data: []Color,
+	depth: []f64,
 }
 
 canvas_make :: proc(width, height, stride: int, allocator := context.allocator) -> Canvas {
 	ensure(width <= stride)
-	return { width, height, stride, make([]Color, stride*height, allocator=allocator) }
+	return { width, height, stride, make([]Color, stride*height, allocator=allocator), make([]f64, stride*height, allocator=allocator) }
 }
 canvas_resize :: proc(canvas: ^Canvas, width, height: int, allocator := context.allocator) {
 	if width <= canvas.stride && height <= len(canvas.data)/canvas.stride {
@@ -45,13 +46,17 @@ canvas_resize :: proc(canvas: ^Canvas, width, height: int, allocator := context.
 		canvas.stride = max(canvas.width, canvas.stride)
 		new_size := canvas.stride*max(canvas.height, old_height)
 		new_data := make([]Color, new_size, allocator=allocator)
+		new_depth := make([]f64, new_size, allocator=allocator)
 		for y in 0..<min(old_height, height) {
 			for x in 0..<min(old_width, width) {
 				new_data[y*canvas.stride + x] = canvas.data[y*old_stride + x]
+				new_depth[y*canvas.stride + x] = canvas.depth[y*old_stride + x]
 			}
 		}
 		delete(canvas.data)
+		delete(canvas.depth)
 		canvas.data = new_data
+		canvas.depth = new_depth
 	}
 }
 canvas_put_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color) {
@@ -59,6 +64,22 @@ canvas_put_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color) {
 }
 canvas_put_pixel_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Color) #no_bounds_check {
 	canvas.data[y*canvas.stride + x] = color
+}
+canvas_put_depth :: proc(canvas: ^Canvas, x, y: int, depth: f64) {
+	canvas.depth[y*canvas.stride + x] = depth
+}
+canvas_put_depth_unsafe :: proc(canvas: ^Canvas, x, y: int, depth: f64) #no_bounds_check {
+	canvas.depth[y*canvas.stride + x] = depth
+}
+canvas_draw_depth :: proc(canvas: ^Canvas, x, y: int, depth: f64) -> (ok: bool) {
+	if canvas.depth[y*canvas.stride + x] <= depth do return false
+	#force_inline canvas_put_depth(canvas, x, y, depth)
+	return true
+}
+canvas_draw_depth_unsafe :: proc(canvas: ^Canvas, x, y: int, depth: f64) -> (ok: bool) #no_bounds_check {
+	if canvas.depth[y*canvas.stride + x] <= depth do return false
+	#force_inline canvas_put_depth_unsafe(canvas, x, y, depth)
+	return true
 }
 color_blend :: #force_inline proc(bg_color, fg_color: Color) -> Color {
 	bgi := cast([4]int)bg_color
@@ -354,6 +375,131 @@ canvas_outline_triangle :: proc(canvas: ^Canvas, triangle: [3][2]int, color: Col
 	canvas_draw_line(canvas, triangle[2].x, triangle[2].y, triangle[0].x, triangle[0].y, color)
 }
 
+transform :: proc(vertex: [3]f64, by: matrix[4, 4]f64) -> [3]f64 {
+	return (by*[4]f64{vertex.x, vertex.y, vertex.z, 1}).xyz
+}
+project_to_screenspace :: proc(vertex: [3]f64, pers: matrix[4, 4]f64) -> [3]f64 {
+	transformed := pers*[4]f64{vertex.x, vertex.y, vertex.z, 1}
+	return transformed.xyz/transformed.w
+}
+draw_triangle_colored :: proc(canvas: ^Canvas, triangle: [3][3]f64, colors: [3]Color) -> [3][2]int {
+	float_to_screen :: proc(w,h:int, posf:[2]f64) -> (posi: [2]int) {
+		// TODO: 1 -> w or h, it should map to w-1 or h-1?
+		return auto_cast((posf+1)/2 * [2]f64{f64(w),f64(h)})
+	}
+	triangle_screen_coords := [3][2]int {
+		float_to_screen(canvas.width, canvas.height, triangle[0].xy),
+		float_to_screen(canvas.width, canvas.height, triangle[1].xy),
+		float_to_screen(canvas.width, canvas.height, triangle[2].xy),
+	}
+	triangle_depth := [3]f64 { triangle[0].z, triangle[1].z, triangle[2].z }
+
+	x1 := triangle_screen_coords[0].x
+	x2 := triangle_screen_coords[1].x
+	x3 := triangle_screen_coords[2].x
+	y1 := triangle_screen_coords[0].y
+	y2 := triangle_screen_coords[1].y
+	y3 := triangle_screen_coords[2].y
+
+	edge1 := [2]int { x2-x1, y2-y1 }
+	edge2 := [2]int { x3-x1, y3-y1 }
+	D := edge1.x*edge2.y - edge2.x*edge1.y
+	if D == 0 do return {}
+	factor := D < 0 ? -1 : 1
+	D *= factor
+
+	xmin := min(x1, x2, x3)
+	ymin := min(y1, y2, y3)
+	xmax := max(x1, x2, x3)
+	ymax := max(y1, y2, y3)
+
+	xmin = clamp(xmin, 0, canvas.width-1)
+	ymin = clamp(ymin, 0, canvas.height-1)
+	xmax = clamp(xmax, 0, canvas.width-1)
+	ymax = clamp(ymax, 0, canvas.height-1)
+
+	for y in ymin..=ymax {
+		l1 := ((xmin-x1)*edge2.y - (y-y1)*edge2.x)*factor
+		l2 := (-(xmin-x1)*edge1.y + (y-y1)*edge1.x)*factor
+		for x in xmin..=xmax {
+			//l1 := ((x-x1)*edge2.y - (y-y1)*edge2.x)*factor
+			//l2 := (-(x-x1)*edge1.y + (y-y1)*edge1.x)*factor
+			defer {
+				l1 += edge2.y*factor
+				l2 -= edge1.y*factor
+			}
+
+			if l1 < 0 || l2 < 0 || D < l1+l2 do continue
+
+			w0 := D-l1-l2
+			w1 := l1
+			w2 := l2
+
+			depth := (
+				triangle_depth[0]*f64(w0) +
+				triangle_depth[1]*f64(w1) +
+				triangle_depth[2]*f64(w2) \
+			)/f64(D)
+			if depth < -1 || 1 < depth do continue
+			color := Color((
+				([4]int)(colors[0])*w0 +
+				([4]int)(colors[1])*w1 +
+				([4]int)(colors[2])*w2 \
+			)/D)
+
+			if canvas_draw_depth_unsafe(canvas, x, y, depth) {
+				canvas_draw_pixel_unsafe(canvas, x, y, color)
+			}
+		}
+	}
+
+	return triangle_screen_coords
+}
+
+fill_triangle :: proc(canvas: ^Canvas, verts: [3][2]int, color: Color) {
+	x1 := verts[0].x
+	x2 := verts[1].x
+	x3 := verts[2].x
+	y1 := verts[0].y
+	y2 := verts[1].y
+	y3 := verts[2].y
+
+	edge1 := [2]int { x2-x1, y2-y1 }
+	edge2 := [2]int { x3-x1, y3-y1 }
+	D := edge1.x*edge2.y - edge2.x*edge1.y
+	if D == 0 do return
+	ensure(D>0)
+	//factor := D < 0 ? -1 : 1
+	//D *= factor
+
+	xmin := min(x1, x2, x3)
+	ymin := min(y1, y2, y3)
+	xmax := max(x1, x2, x3)
+	ymax := max(y1, y2, y3)
+
+	xmin = clamp(xmin, 0, canvas.width-1)
+	ymin = clamp(ymin, 0, canvas.height-1)
+	xmax = clamp(xmax, 0, canvas.width-1)
+	ymax = clamp(ymax, 0, canvas.height-1)
+
+	for y in ymin..=ymax {
+		for x in xmin..=xmax {
+			l1 := ((x-x1)*edge2.y - (y-y1)*edge2.x)//*factor
+			l2 := (-(x-x1)*edge1.y + (y-y1)*edge1.x)//*factor
+
+			if l1 < 0 {
+				canvas_draw_pixel_unsafe(canvas, x, y, {0,color.g,color.b,color.a})
+			} else if l2 < 0 {
+				canvas_draw_pixel_unsafe(canvas, x, y, {color.r,0,color.b,color.a})
+			} else if D < l1+l2 {
+				canvas_draw_pixel_unsafe(canvas, x, y, {color.r,color.g,0,color.a})
+			} else {
+				canvas_draw_pixel_unsafe(canvas, x, y, color)
+			}
+		}
+	}
+}
+
 draw :: proc(app: ^glue.android_app) {
 	if app.window == nil do return
 
@@ -374,6 +520,11 @@ draw :: proc(app: ^glue.android_app) {
 	canvas_resize(&state.canvas, int(buffer.width), int(buffer.height))
 	//fmt.println("drawing:", state.canvas.width, state.canvas.height)
 	canvas_fill(&state.canvas, {150,150,150,255}/*state.bg_color*/)
+	for y in 0..<state.canvas.height-1 {
+		for x in 0..<state.canvas.width-1 {
+			#force_inline canvas_put_depth_unsafe(&state.canvas, x, y, 1)
+		}
+	}
 
 	pos_ratio := ([2]f64)(state.last_touch_pos)/[2]f64{f64(state.canvas.width),f64(state.canvas.height)}
 	theta_y := (-math.TAU/8)*(1-pos_ratio.x) + (math.TAU/8)*pos_ratio.x
@@ -384,57 +535,62 @@ draw :: proc(app: ^glue.android_app) {
 	rot_x := linalg.matrix4_rotate_f64(theta_x, {1,0,0})
 	view := linalg.matrix4_look_at_f64({0,0,-12}, {-0.5, 4, -3}, {0,1,0})
 	proj := linalg.matrix4_perspective_f64(math.TAU/6, f64(state.canvas.width)/f64(state.canvas.height), 1, 1000)
-	final_mat := proj*view*trans*rot_x*rot_y
-	final_no_rot := proj*view*trans
+	cube_trans := view*trans*rot_x*rot_y
+	floor_trans := view*trans
 
 	for triag, i in cube {
-		triag_4d := [3][4]f64 {
-			{ triag[0].x, triag[0].y, triag[0].z, 1 },
-			{ triag[1].x, triag[1].y, triag[1].z, 1 },
-			{ triag[2].x, triag[2].y, triag[2].z, 1 },
-		}
-		projected := [3][4]f64 {
-			final_mat*triag_4d[0],
-			final_mat*triag_4d[1],
-			final_mat*triag_4d[2],
-		}
 		transformed := [3][3]f64 {
-			projected[0].xyz/projected[0].w,
-			projected[1].xyz/projected[1].w,
-			projected[2].xyz/projected[2].w,
+			transform(triag[0], cube_trans),
+			transform(triag[1], cube_trans),
+			transform(triag[2], cube_trans),
 		}
-		w, h := state.canvas.width, state.canvas.height
-		x0, y0 := float_to_screen(w, h, transformed[0].x, transformed[0].y)
-		x1, y1 := float_to_screen(w, h, transformed[1].x, transformed[1].y)
-		x2, y2 := float_to_screen(w, h, transformed[2].x, transformed[2].y)
-		screen := [3][2]int {{x0,y0},{x1,y1},{x2,y2}}
+		screenspace := [3][3]f64 {
+			project_to_screenspace(transformed[0], proj),
+			project_to_screenspace(transformed[1], proj),
+			project_to_screenspace(transformed[2], proj),
+		}
+
 		r := u8(20 + 200*i/(len(cube)-1))
 		g := u8(200 - 200*i/(len(cube)-1))
-		if i < 2 do canvas_outline_triangle(&state.canvas, screen, state.bg_color)
-		else do canvas_outline_triangle(&state.canvas, screen, {r, g, 150, 255})
+		color := Color {r, g, 150, 255}
+
+		if i < 2 {
+			coords := draw_triangle_colored(
+				&state.canvas, screenspace,
+				{state.bg_color,state.bg_color,state.bg_color},
+			)
+			canvas_outline_triangle(
+				&state.canvas, coords,
+				state.bg_color,
+			)
+		} else {
+			coords := draw_triangle_colored(
+				&state.canvas, screenspace,
+				{color,color,color},
+			)
+			canvas_outline_triangle(
+				&state.canvas, coords,
+				color,
+			)
+		}
 	}
 	for triag in floor {
-		triag_4d := [3][4]f64 {
-			{ triag[0].x, triag[0].y, triag[0].z, 1 },
-			{ triag[1].x, triag[1].y, triag[1].z, 1 },
-			{ triag[2].x, triag[2].y, triag[2].z, 1 },
-		}
-		projected := [3][4]f64 {
-			final_no_rot*triag_4d[0],
-			final_no_rot*triag_4d[1],
-			final_no_rot*triag_4d[2],
-		}
 		transformed := [3][3]f64 {
-			projected[0].xyz/projected[0].w,
-			projected[1].xyz/projected[1].w,
-			projected[2].xyz/projected[2].w,
+			transform(triag[0], floor_trans),
+			transform(triag[1], floor_trans),
+			transform(triag[2], floor_trans),
 		}
-		w, h := state.canvas.width, state.canvas.height
-		x0, y0 := float_to_screen(w, h, transformed[0].x, transformed[0].y)
-		x1, y1 := float_to_screen(w, h, transformed[1].x, transformed[1].y)
-		x2, y2 := float_to_screen(w, h, transformed[2].x, transformed[2].y)
-		screen := [3][2]int {{x0,y0},{x1,y1},{x2,y2}}
-		canvas_outline_triangle(&state.canvas, screen, {255,255,255,255})
+		screenspace := [3][3]f64 {
+			project_to_screenspace(transformed[0], proj),
+			project_to_screenspace(transformed[1], proj),
+			project_to_screenspace(transformed[2], proj),
+		}
+
+		coords := draw_triangle_colored(
+			&state.canvas, screenspace,
+			{{255,0,0,255},{0,255,0,255},{0,0,255,255}},
+		)
+		canvas_outline_triangle(&state.canvas, coords, {255,255,255,255})
 	}
 
 	canvas_rect_fill(&state.canvas, {10,16,64,128}, {0,100,200,255})
@@ -445,6 +601,12 @@ draw :: proc(app: ^glue.android_app) {
 		state.last_touch_pos.x, state.last_touch_pos.y,
 		{0,0,0,255},
 	)
+
+	fill_triangle(&state.canvas, {
+		{550,550},
+		{750,500},
+		{500,750},
+	}, {255,255,255,127})
 
 	pixels := ([^]Color)(buffer.bits)
 	for y in 0..<state.canvas.height {
