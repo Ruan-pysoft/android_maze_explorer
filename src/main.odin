@@ -28,14 +28,42 @@ Canvas :: struct {
 	height: int,
 	stride: int,
 	data: []Color,
+}
+Canvas3D :: struct {
+	using canvas: Canvas,
 	depth: []f64,
 }
 
 canvas_make :: proc(width, height, stride: int, allocator := context.allocator) -> Canvas {
 	ensure(width <= stride)
-	return { width, height, stride, make([]Color, stride*height, allocator=allocator), make([]f64, stride*height, allocator=allocator) }
+	return { width, height, stride, make([]Color, stride*height, allocator=allocator) }
+}
+canvas3d_make :: proc(width, height, stride: int, allocator := context.allocator) -> Canvas3D {
+	return { canvas_make(width, height, stride, allocator), make([]f64, stride*height, allocator=allocator) }
 }
 canvas_resize :: proc(canvas: ^Canvas, width, height: int, allocator := context.allocator) {
+	if width <= canvas.stride && height <= len(canvas.data)/canvas.stride {
+		canvas.width = width
+		canvas.height = height
+	} else {
+		old_width := canvas.width
+		old_height := canvas.height
+		old_stride := canvas.stride
+		canvas.width = width
+		canvas.height = height
+		canvas.stride = max(canvas.width, canvas.stride)
+		new_size := canvas.stride*max(canvas.height, old_height)
+		new_data := make([]Color, new_size, allocator=allocator)
+		for y in 0..<min(old_height, height) {
+			for x in 0..<min(old_width, width) {
+				new_data[y*canvas.stride + x] = canvas.data[y*old_stride + x]
+			}
+		}
+		delete(canvas.data)
+		canvas.data = new_data
+	}
+}
+canvas3d_resize :: proc(canvas: ^Canvas3D, width, height: int, allocator := context.allocator) {
 	if width <= canvas.stride && height <= len(canvas.data)/canvas.stride {
 		canvas.width = width
 		canvas.height = height
@@ -67,18 +95,18 @@ canvas_put_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color) {
 canvas_put_pixel_unsafe :: proc(canvas: ^Canvas, x, y: int, color: Color) #no_bounds_check {
 	canvas.data[y*canvas.stride + x] = color
 }
-canvas_put_depth :: proc(canvas: ^Canvas, x, y: int, depth: f64) {
+canvas_put_depth :: proc(canvas: ^Canvas3D, x, y: int, depth: f64) {
 	canvas.depth[y*canvas.stride + x] = depth
 }
-canvas_put_depth_unsafe :: proc(canvas: ^Canvas, x, y: int, depth: f64) #no_bounds_check {
+canvas_put_depth_unsafe :: proc(canvas: ^Canvas3D, x, y: int, depth: f64) #no_bounds_check {
 	canvas.depth[y*canvas.stride + x] = depth
 }
-canvas_draw_depth :: proc(canvas: ^Canvas, x, y: int, depth: f64) -> (ok: bool) {
+canvas_draw_depth :: proc(canvas: ^Canvas3D, x, y: int, depth: f64) -> (ok: bool) {
 	if canvas.depth[y*canvas.stride + x] <= depth do return false
 	#force_inline canvas_put_depth(canvas, x, y, depth)
 	return true
 }
-canvas_draw_depth_unsafe :: proc(canvas: ^Canvas, x, y: int, depth: f64) -> (ok: bool) #no_bounds_check {
+canvas_draw_depth_unsafe :: proc(canvas: ^Canvas3D, x, y: int, depth: f64) -> (ok: bool) #no_bounds_check {
 	if canvas.depth[y*canvas.stride + x] <= depth do return false
 	#force_inline canvas_put_depth_unsafe(canvas, x, y, depth)
 	return true
@@ -235,6 +263,7 @@ canvas_draw_line :: proc(canvas: ^Canvas, x1, y1, x2, y2: int, color: Color) {
 State :: struct {
 	bg_color: Color,
 	canvas: Canvas,
+	canvas3d: Canvas3D,
 	last_touch_pos: [2]int,
 }
 
@@ -266,6 +295,7 @@ on_app_cmd :: proc(app: ^glue.android_app, cmd: i32) {
 		log.info("Window size:", w, h)
 		state := (^State)(app.userData)
 		canvas_resize(&state.canvas, w, h)
+		canvas3d_resize(&state.canvas3d, w/THREEDEE_GRAPHICS_SCALE, h/THREEDEE_GRAPHICS_SCALE)
 		draw(app)
 	case glue.APP_CMD_DESTROY:
 		log.info("destroy command sent?")
@@ -384,16 +414,15 @@ project_to_screenspace :: proc(vertex: [3]f64, pers: matrix[4, 4]f64) -> [3]f64 
 	transformed := pers*[4]f64{vertex.x, vertex.y, vertex.z, 1}
 	return transformed.xyz/transformed.w
 }
-draw_triangle_colored :: proc(canvas: ^Canvas, triangle: [3][3]f64, colors: [3]Color) -> [3][2]int {
+draw_triangle_colored :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, colors: [3]Color) -> [3][2]int {
 	float_to_screen :: proc(w,h:int, posf:[2]f64) -> (posi: [2]int) {
 		// TODO: 1 -> w or h, it should map to w-1 or h-1?
 		return auto_cast((posf+1)/2 * [2]f64{f64(w),f64(h)})
 	}
-	w, h := canvas.width/THREEDEE_GRAPHICS_SCALE, canvas.height/THREEDEE_GRAPHICS_SCALE
 	triangle_screen_coords := [3][2]int {
-		float_to_screen(w, h, triangle[0].xy),
-		float_to_screen(w, h, triangle[1].xy),
-		float_to_screen(w, h, triangle[2].xy),
+		float_to_screen(canvas.width, canvas.height, triangle[0].xy),
+		float_to_screen(canvas.width, canvas.height, triangle[1].xy),
+		float_to_screen(canvas.width, canvas.height, triangle[2].xy),
 	}
 	triangle_depth := [3]f64 { triangle[0].z, triangle[1].z, triangle[2].z }
 
@@ -450,18 +479,8 @@ draw_triangle_colored :: proc(canvas: ^Canvas, triangle: [3][3]f64, colors: [3]C
 				([4]int)(colors[2])*w2 \
 			)/D)
 
-			// just assume the screen dimentions are divisible by THREEDEE_GRAPHICS_SCALE
-			// WARN: THIS CAN AND WILL CRASH ON UNEXPECTED SCREEN DIMENSIONS
 			if canvas_draw_depth_unsafe(canvas, x, y, depth) {
-				#unroll for iy in 0..<THREEDEE_GRAPHICS_SCALE {
-					#unroll for ix in 0..<THREEDEE_GRAPHICS_SCALE {
-						canvas_draw_pixel_unsafe(
-							canvas,
-							THREEDEE_GRAPHICS_SCALE*x + ix, THREEDEE_GRAPHICS_SCALE*y + iy,
-							color,
-						)
-					}
-				}
+				canvas_draw_pixel_unsafe(canvas, x, y, color)
 			}
 		}
 	}
@@ -531,11 +550,13 @@ draw :: proc(app: ^glue.android_app) {
 	}
 
 	canvas_resize(&state.canvas, int(buffer.width), int(buffer.height))
+	canvas3d_resize(&state.canvas3d, int(buffer.width)/THREEDEE_GRAPHICS_SCALE, int(buffer.height)/THREEDEE_GRAPHICS_SCALE)
 	//fmt.println("drawing:", state.canvas.width, state.canvas.height)
 	canvas_fill(&state.canvas, {150,150,150,255}/*state.bg_color*/)
-	for y in 0..<state.canvas.height-1 {
-		for x in 0..<state.canvas.width-1 {
-			#force_inline canvas_put_depth_unsafe(&state.canvas, x, y, 1)
+	for y in 0..<state.canvas3d.height-1 {
+		for x in 0..<state.canvas3d.width-1 {
+			#force_inline canvas_put_pixel_unsafe(&state.canvas3d, x, y, {})
+			#force_inline canvas_put_depth_unsafe(&state.canvas3d, x, y, 1)
 		}
 	}
 
@@ -547,7 +568,7 @@ draw :: proc(app: ^glue.android_app) {
 	rot_y := linalg.matrix4_rotate_f64(theta_y, {0,1,0})
 	rot_x := linalg.matrix4_rotate_f64(theta_x, {1,0,0})
 	view := linalg.matrix4_look_at_f64({0,0,-12}, {-0.5, 4, -3}, {0,1,0})
-	proj := linalg.matrix4_perspective_f64(math.TAU/6, f64(state.canvas.width)/f64(state.canvas.height), 1, 1000)
+	proj := linalg.matrix4_perspective_f64(math.TAU/6, f64(state.canvas3d.width)/f64(state.canvas3d.height), 1, 1000)
 	cube_trans := view*trans*rot_x*rot_y
 	floor_trans := view*trans
 
@@ -569,20 +590,20 @@ draw :: proc(app: ^glue.android_app) {
 
 		if i < 2 {
 			coords := draw_triangle_colored(
-				&state.canvas, screenspace,
+				&state.canvas3d, screenspace,
 				{state.bg_color,state.bg_color,state.bg_color},
 			)
 			canvas_outline_triangle(
-				&state.canvas, coords,
+				&state.canvas, coords*THREEDEE_GRAPHICS_SCALE,
 				state.bg_color,
 			)
 		} else {
 			coords := draw_triangle_colored(
-				&state.canvas, screenspace,
+				&state.canvas3d, screenspace,
 				{color,color,color},
 			)
 			canvas_outline_triangle(
-				&state.canvas, coords,
+				&state.canvas, coords*THREEDEE_GRAPHICS_SCALE,
 				color,
 			)
 		}
@@ -600,10 +621,31 @@ draw :: proc(app: ^glue.android_app) {
 		}
 
 		coords := draw_triangle_colored(
-			&state.canvas, screenspace,
+			&state.canvas3d, screenspace,
 			{{255,0,0,255},{0,255,0,255},{0,0,255,255}},
 		)
-		canvas_outline_triangle(&state.canvas, coords, {255,255,255,255})
+		canvas_outline_triangle(&state.canvas, coords*THREEDEE_GRAPHICS_SCALE, {255,255,255,255})
+	}
+
+	for y in 0..<state.canvas3d.height {
+		for ysub in 0..<THREEDEE_GRAPHICS_SCALE {
+			y_outer := y*THREEDEE_GRAPHICS_SCALE + ysub
+			for x in 0..<state.canvas3d.width {
+				color: Color
+				#no_bounds_check {
+				color = state.canvas3d.data[y*state.canvas3d.stride + x]
+				}
+				if color.a == 0 do continue
+				for xsub in 0..<THREEDEE_GRAPHICS_SCALE {
+					x_outer := x*THREEDEE_GRAPHICS_SCALE + xsub
+					canvas_draw_pixel_unsafe(
+						&state.canvas,
+						x_outer, y_outer,
+						color,
+					)
+				}
+			}
+		}
 	}
 
 	canvas_rect_fill(&state.canvas, {10,16,64,128}, {0,100,200,255})
