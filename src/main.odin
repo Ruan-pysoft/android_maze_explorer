@@ -10,6 +10,8 @@ import "core:strings"
 import "core:sys/android"
 import glue "core:sys/android/native_app_glue"
 
+THREEDEE_GRAPHICS_SCALE :: 8
+
 // headers:
 // ~/Android/ndk/30.0.16248370/sources/android/native_app_glue/android_native_app_glue.h
 // ~/Android/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/android/
@@ -387,10 +389,11 @@ draw_triangle_colored :: proc(canvas: ^Canvas, triangle: [3][3]f64, colors: [3]C
 		// TODO: 1 -> w or h, it should map to w-1 or h-1?
 		return auto_cast((posf+1)/2 * [2]f64{f64(w),f64(h)})
 	}
+	w, h := canvas.width/THREEDEE_GRAPHICS_SCALE, canvas.height/THREEDEE_GRAPHICS_SCALE
 	triangle_screen_coords := [3][2]int {
-		float_to_screen(canvas.width, canvas.height, triangle[0].xy),
-		float_to_screen(canvas.width, canvas.height, triangle[1].xy),
-		float_to_screen(canvas.width, canvas.height, triangle[2].xy),
+		float_to_screen(w, h, triangle[0].xy),
+		float_to_screen(w, h, triangle[1].xy),
+		float_to_screen(w, h, triangle[2].xy),
 	}
 	triangle_depth := [3]f64 { triangle[0].z, triangle[1].z, triangle[2].z }
 
@@ -447,8 +450,18 @@ draw_triangle_colored :: proc(canvas: ^Canvas, triangle: [3][3]f64, colors: [3]C
 				([4]int)(colors[2])*w2 \
 			)/D)
 
+			// just assume the screen dimentions are divisible by THREEDEE_GRAPHICS_SCALE
+			// WARN: THIS CAN AND WILL CRASH ON UNEXPECTED SCREEN DIMENSIONS
 			if canvas_draw_depth_unsafe(canvas, x, y, depth) {
-				canvas_draw_pixel_unsafe(canvas, x, y, color)
+				#unroll for iy in 0..<THREEDEE_GRAPHICS_SCALE {
+					#unroll for ix in 0..<THREEDEE_GRAPHICS_SCALE {
+						canvas_draw_pixel_unsafe(
+							canvas,
+							THREEDEE_GRAPHICS_SCALE*x + ix, THREEDEE_GRAPHICS_SCALE*y + iy,
+							color,
+						)
+					}
+				}
 			}
 		}
 	}
