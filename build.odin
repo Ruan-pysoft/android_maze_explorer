@@ -4,11 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:slice"
 
-_ :: `
-~/Android/build-tools/36.0.0/aapt package -f -M AndroidManifest.xml -I ~/Android/platforms/android-16/android.jar -S res -F android-test-app.apk build/
-┬─[ruan@melkkos:~/Documents/programmeering/odin/android_test_app]─[pts/1]─[Wed 26-10-07 01:02:33]
-╰─> 0 (git)[master] % ~/Android/build-tools/36.0.0/zipalign -f 4 android-test-app.apk aligned-android-test-app.apk
-`
+APP_ID :: "android-maze-explorer"
 
 main :: proc() {
 	os.remove_all("build/")
@@ -26,7 +22,7 @@ main :: proc() {
 		"odin", "build",
 		"src/",
 		"-o:speed",
-		"-out:build/lib/arm64-v8a/libandroid-test-app.so",
+		"-out:build/lib/arm64-v8a/lib"+APP_ID+".so",
 		"-build-mode:shared",
 		"-target=linux_arm64",
 		"-subtarget:android",
@@ -37,8 +33,15 @@ main :: proc() {
 		"odin", "bundle", "android",
 		"build",
 		"-minimum-os-version:30",
-		"-out:out/android-test-app.apk"
+		"-out:out/"+APP_ID+".apk",
 	}, enable_stdin=true))
+
+	if len(os.args) > 1 && os.args[1] == "install" {
+		ensure(run_cmd({
+			"adb", "install",
+			"out/"+APP_ID+".apk",
+		}))
+	}
 }
 
 run_cmd :: proc(cmd: []string, enable_stdin := false, location := #caller_location) -> (ok: bool) {
