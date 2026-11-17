@@ -186,7 +186,8 @@ draw_triangle_colored :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, colors: [3
 	edge1 := [2]int { x2-x1, y2-y1 }
 	edge2 := [2]int { x3-x1, y3-y1 }
 	D := edge1.x*edge2.y - edge2.x*edge1.y
-	if D == 0 do return {}
+	when ONLY_CC_TRIANGLES do if D <= 0 do return {}
+	else do if D == 0 do return {}
 	factor := D < 0 ? -1 : 1
 	D *= factor
 
@@ -260,15 +261,6 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 
 	state := (^State)(app.userData)
 
-	before_draw := time.tick_now()
-
-	bg_color := Color {
-		0xF0,
-		u8(state.last_touch_pos.x*255/state.window_size.x),
-		u8(state.last_touch_pos.y*255/state.window_size.y),
-		0xFF,
-	}
-
 	android.ANativeWindow_setBuffersGeometry(app.window, 0, 0, .R8G8B8A8_UNORM)
 	buffer: android.ANativeWindow_Buffer
 	if android.ANativeWindow_lock(app.window, &buffer, nil) != 0 {
@@ -276,15 +268,20 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 	}
 	defer android.ANativeWindow_unlockAndPost(app.window)
 
-	float_to_screen :: proc(w,h:int, xf,yf: f64) -> (xi,yi: int) {
-		// TODO: 1 -> w or h, it should map to w-1 or h-1?
-		return int((xf+1)/2*f64(w)), int((yf+1)/2*f64(h))
+	before_draw := time.tick_now()
+
+	touch_color := Color {
+		0xF0,
+		u8(state.last_touch_pos.x*255/state.window_size.x),
+		u8(state.last_touch_pos.y*255/state.window_size.y),
+		0xFF,
 	}
 
 	canvas_resize(&state.canvas, int(buffer.width), int(buffer.height), preserve_content=false)
 	canvas3d_resize(&state.canvas3d, int(buffer.width)/THREEDEE_GRAPHICS_SCALE, int(buffer.height)/THREEDEE_GRAPHICS_SCALE, preserve_content=false)
 	//fmt.println("drawing:", state.canvas.width, state.canvas.height)
-	canvas_fill(&state.canvas, {150,150,150,255}/*state.bg_color*/)
+	bg := Color {150,150,150,255}
+	//canvas_fill(&state.canvas, /*state.bg_color*/)
 	canvas3d_reset(&state.canvas3d)
 
 	pos_ratio := ([2]f64)(state.last_touch_pos)/[2]f64{f64(state.canvas.width),f64(state.canvas.height)}
@@ -298,6 +295,8 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 	proj := linalg.matrix4_perspective_f64(math.TAU/6, f64(state.canvas3d.width)/f64(state.canvas3d.height), 1, 1000)
 	cube_trans := view*trans*rot_x*rot_y
 	floor_trans := view*trans
+
+	outlines: [dynamic; 25]struct{triag:Triangle2D,color:Color}
 
 	for triag, i in cube {
 		transformed := [3][3]f64 {
@@ -318,21 +317,17 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 		if i < 2 {
 			coords := draw_triangle_colored(
 				&state.canvas3d, screenspace,
-				{bg_color,bg_color,bg_color},
+				{touch_color,touch_color,touch_color},
 			)
-			draw_triangle_outline(
-				&state.canvas, coords*THREEDEE_GRAPHICS_SCALE,
-				bg_color,
-			)
+			oc := touch_color.rgb/4
+			append(&outlines, {coords,{oc.r,oc.g,oc.b,255}})
 		} else {
 			coords := draw_triangle_colored(
 				&state.canvas3d, screenspace,
 				{color,color,color},
 			)
-			draw_triangle_outline(
-				&state.canvas, coords*THREEDEE_GRAPHICS_SCALE,
-				color,
-			)
+			oc := color.rgb/4
+			append(&outlines, {coords,{oc.r,oc.g,oc.b,255}})
 		}
 	}
 	for triag in floor {
@@ -351,7 +346,7 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 			&state.canvas3d, screenspace,
 			{{255,0,0,255},{0,255,0,255},{0,0,255,255}},
 		)
-		draw_triangle_outline(&state.canvas, coords*THREEDEE_GRAPHICS_SCALE, {255,255,255,255})
+		append(&outlines, {coords,{255,255,255,127}})
 	}
 
 	for y in 0..<state.canvas3d.height {
@@ -362,8 +357,14 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 				#no_bounds_check {
 				color = state.canvas3d.data[y*state.canvas3d.stride + x]
 				}
-				if color.a == 0 do continue
-				for xsub in 0..<THREEDEE_GRAPHICS_SCALE {
+				if color.a == 0 do for xsub in 0..<THREEDEE_GRAPHICS_SCALE {
+					x_outer := x*THREEDEE_GRAPHICS_SCALE + xsub
+					canvas_draw_pixel_unsafe(
+						&state.canvas,
+						x_outer, y_outer,
+						bg,
+					)
+				} else do for xsub in 0..<THREEDEE_GRAPHICS_SCALE {
 					x_outer := x*THREEDEE_GRAPHICS_SCALE + xsub
 					canvas_draw_pixel_unsafe(
 						&state.canvas,
@@ -373,6 +374,10 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 				}
 			}
 		}
+	}
+
+	for outline in outlines {
+		draw_triangle_outline(&state.canvas, outline.triag*THREEDEE_GRAPHICS_SCALE, outline.color)
 	}
 
 	draw_rect(&state.canvas, {10,16,64,128}, {0,100,200,255})

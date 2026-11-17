@@ -135,7 +135,7 @@ draw_line :: proc(canvas: ^Canvas, p1, p2: Point, color: Color) {
 	}
 }
 
-ONLY_CC_TRIANGLES :: #config(ONLY_CC_TRIANGLES, false)
+ONLY_CC_TRIANGLES :: #config(ONLY_CC_TRIANGLES, true)
 
 Triangle2D :: [3][2]int
 
