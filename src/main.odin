@@ -11,11 +11,14 @@ import "core:slice"
 import "core:strings"
 import "core:sys/android"
 import glue "core:sys/android/native_app_glue"
+import "core:time"
 
 THREEDEE_GRAPHICS_SCALE :: 8
 
 State :: struct {
+	app_has_been_init: bool,
 	should_quit: bool,
+	last_frame_time_nanos: i64,
 
 	ctx: runtime.Context,
 
@@ -28,6 +31,8 @@ State :: struct {
 	canvas3d: Canvas3D,
 }
 
+RENDER_ASAP :: #config(RENDER_ASAP, true)
+
 main :: proc() {
 	context.logger = log.create_console_logger(ident="android-maze-explorer")
 
@@ -39,10 +44,49 @@ main :: proc() {
 	app.onAppCmd = on_app_cmd
 	app.onInputEvent = auto_cast on_input_event
 
-	for app.destroyRequested == 0 && !state.should_quit {
-		source: ^glue.android_poll_source
-		if android.ALooper_pollOnce(-1, nil, nil, (^rawptr)(&source)) >= 0 && source != nil {
-			source.process(app, source)
+	when RENDER_ASAP {
+		for app.destroyRequested == 0 && !state.should_quit && !state.app_has_been_init {
+			source: ^glue.android_poll_source
+			if android.ALooper_pollOnce(
+				-1,
+				nil,
+				nil,
+				(^rawptr)(&source),
+			) >= 0 && source != nil {
+				source.process(app, source)
+			}
+		}
+		for app.destroyRequested == 0 && !state.should_quit {
+			for app.destroyRequested == 0 && !state.should_quit {
+				source: ^glue.android_poll_source
+				poll_res := android.ALooper_pollOnce(
+					0,
+					nil,
+					nil,
+					(^rawptr)(&source),
+				)
+				if poll_res >= 0 && source != nil {
+					source.process(app, source)
+				} else if poll_res < 0 do break
+			}
+
+			time_nsec := time.tick_now()._nsec
+			dt_nsec := time_nsec - state.last_frame_time_nanos
+			state.last_frame_time_nanos = time_nsec
+
+			process(app, &state, dt_nsec)
+		}
+	} else {
+		for app.destroyRequested == 0 && !state.should_quit {
+			source: ^glue.android_poll_source
+			if android.ALooper_pollOnce(
+				-1,
+				nil,
+				nil,
+				(^rawptr)(&source),
+			) >= 0 && source != nil {
+				source.process(app, source)
+			}
 		}
 	}
 }
@@ -57,18 +101,26 @@ frame_cb :: proc"c"(frame_time_nanos: i64, data: rawptr) {
 		frame_cb,
 		app,
 	)
+	frame_length_nanos := frame_time_nanos - state.last_frame_time_nanos
+	state.last_frame_time_nanos = frame_time_nanos
 
-	log.info("In frame callback! Window size: ", state.window_size)
+	process(app, state, frame_length_nanos)
+}
+
+process :: proc(app: ^glue.android_app, state: ^State, dt_nsec: i64) {
+	fps := 1_000_000_000 / dt_nsec
+
+	log.info("In frame callback! FPS:", fps)
 
 	draw(app, state)
 }
 
 on_app_cmd :: proc(app: ^glue.android_app, cmd: i32) {
+	state := (^State)(app.userData)
 	switch cmd {
 	case glue.APP_CMD_INIT_WINDOW, glue.APP_CMD_WINDOW_RESIZED, glue.APP_CMD_WINDOW_REDRAW_NEEDED:
 		w, h := int(android.ANativeWindow_getWidth(app.window)), int(android.ANativeWindow_getHeight(app.window))
 		log.debug("Window size changed to:", w, h)
-		state := (^State)(app.userData)
 		if state.window_size != {w, h} {
 			state.window_size = {w, h}
 			state.window_size_changed = true
@@ -79,7 +131,8 @@ on_app_cmd :: proc(app: ^glue.android_app, cmd: i32) {
 		state.should_quit = true
 	}
 	if cmd == glue.APP_CMD_INIT_WINDOW {
-		android.AChoreographer_postFrameCallback64(
+		state.app_has_been_init = true
+		when !RENDER_ASAP do android.AChoreographer_postFrameCallback64(
 			android.AChoreographer_getInstance(),
 			frame_cb,
 			app,
