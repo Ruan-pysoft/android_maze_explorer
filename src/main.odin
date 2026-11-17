@@ -1,5 +1,7 @@
 package android_maze_explorer
 
+import "base:runtime"
+
 import "core:fmt"
 import "core:log"
 import "core:math"
@@ -13,147 +15,96 @@ import glue "core:sys/android/native_app_glue"
 THREEDEE_GRAPHICS_SCALE :: 8
 
 State :: struct {
-	bg_color: Color,
+	should_quit: bool,
+
+	ctx: runtime.Context,
+
+	last_touch_pos: [2]int,
+
+	window_size: [2]int,
+	window_size_changed: bool,
+
 	canvas: Canvas,
 	canvas3d: Canvas3D,
-	last_touch_pos: [2]int,
 }
 
 main :: proc() {
 	context.logger = log.create_console_logger(ident="android-maze-explorer")
 
-	fmt.println("Hello from main, started with", os.args)
-	log.info("Logging, does it work..?")
+	state: State
+	state.ctx = context
 
-	state := State{
-		bg_color = {0xF0, 0xC0, 0x42, 0xFF},
-		canvas = canvas_make(100, 100, 100),
-		//canvas3d = canvas3d_make(12, 12, 12),
-	}
 	app := glue.app()
 	app.userData = &state
 	app.onAppCmd = on_app_cmd
-	app.onInputEvent = on_input_event
+	app.onInputEvent = auto_cast on_input_event
 
-	for app.destroyRequested == 0 {
+	for app.destroyRequested == 0 && !state.should_quit {
 		source: ^glue.android_poll_source
 		if android.ALooper_pollOnce(-1, nil, nil, (^rawptr)(&source)) >= 0 && source != nil {
 			source.process(app, source)
 		}
 	}
-	log.info("finishing up...")
+}
+
+frame_cb :: proc"c"(frame_time_nanos: i64, data: rawptr) {
+	app := cast(^glue.android_app) data
+	state := cast(^State) app.userData
+	context = state.ctx
+	defer android.ALooper_wake(app.looper)
+	defer android.AChoreographer_postFrameCallback64(
+		android.AChoreographer_getInstance(),
+		frame_cb,
+		app,
+	)
+
+	log.info("In frame callback! Window size: ", state.window_size)
+
+	draw(app, state)
 }
 
 on_app_cmd :: proc(app: ^glue.android_app, cmd: i32) {
 	switch cmd {
 	case glue.APP_CMD_INIT_WINDOW, glue.APP_CMD_WINDOW_RESIZED, glue.APP_CMD_WINDOW_REDRAW_NEEDED:
 		w, h := int(android.ANativeWindow_getWidth(app.window)), int(android.ANativeWindow_getHeight(app.window))
-		log.info("Window size:", w, h)
+		log.debug("Window size changed to:", w, h)
 		state := (^State)(app.userData)
-		canvas_resize(&state.canvas, w, h)
-		canvas3d_resize(&state.canvas3d, w/THREEDEE_GRAPHICS_SCALE, h/THREEDEE_GRAPHICS_SCALE)
-		draw(app)
+		if state.window_size != {w, h} {
+			state.window_size = {w, h}
+			state.window_size_changed = true
+		}
 	case glue.APP_CMD_DESTROY:
-		log.info("destroy command sent?")
+		log.info("destroy command sent")
+		state := (^State)(app.userData)
+		state.should_quit = true
+	}
+	if cmd == glue.APP_CMD_INIT_WINDOW {
+		android.AChoreographer_postFrameCallback64(
+			android.AChoreographer_getInstance(),
+			frame_cb,
+			app,
+		)
 	}
 }
 
-on_input_event :: proc(app: ^glue.android_app, event: ^android.AInputEvent) -> i32 {
+on_input_event :: proc(
+	app: ^glue.android_app,
+	event: ^android.AInputEvent,
+) -> (handled: b32) {
 	if android.AInputEvent_getType(event) != .MOTION || app.window == nil {
-		return 0
+		return false
 	}
 
 	#partial switch android.AMotionEvent_getAction(event).action {
 	case .DOWN, .MOVE:
-		width := android.ANativeWindow_getWidth(app.window)
-		height := android.ANativeWindow_getHeight(app.window)
-		x := clamp(i32(android.AMotionEvent_getX(event, 0)), 0, width)
-		y := clamp(i32(android.AMotionEvent_getY(event, 0)), 0, height)
-
 		state := (^State)(app.userData)
-		state.bg_color.g = u8(x*255/width)
-		state.bg_color.b = u8(y*255/height)
-		state.last_touch_pos = { int(x), int(y) }
-		//fmt.println(state.last_touch_pos)
-		draw(app)
+
+		state.last_touch_pos = {
+			int(android.AMotionEvent_getX(event, 0)),
+			int(android.AMotionEvent_getY(event, 0)),
+		}
 	}
-	return 1
-}
-
-floor := [?][3][3]f64 {
-	{
-		{-2.0, 2.0, 2.0 },
-		{ 2.0, 2.0, 2.0 },
-		{ 2.0, 2.0,-2.0 },
-	},
-	{
-		{-2.0, 2.0, 2.0 },
-		{ 2.0, 2.0,-2.0 },
-		{-2.0, 2.0,-2.0 },
-	},
-}
-
-cube := [?][3][3]f64 {
-	{ // front face
-		{ 1.0, 1.0,-1.0 },
-		{ 1.0,-1.0,-1.0 },
-		{-1.0, 1.0,-1.0 },
-	},
-	{
-		{-1.0, 1.0,-1.0 },
-		{ 1.0,-1.0,-1.0 },
-		{-1.0,-1.0,-1.0 },
-	},
-	{ // back face
-		{ 1.0, 1.0, 1.0 },
-		{-1.0, 1.0, 1.0 },
-		{ 1.0,-1.0, 1.0 },
-	},
-	{
-		{-1.0, 1.0, 1.0 },
-		{-1.0,-1.0, 1.0 },
-		{ 1.0,-1.0, 1.0 },
-	},
-	{ // right face
-		{ 1.0, 1.0,-1.0 },
-		{ 1.0, 1.0, 1.0 },
-		{ 1.0,-1.0,-1.0 },
-	},
-	{
-		{ 1.0,-1.0,-1.0 },
-		{ 1.0, 1.0, 1.0 },
-		{ 1.0,-1.0, 1.0 },
-	},
-	{ // left face
-		{-1.0, 1.0,-1.0 },
-		{-1.0,-1.0,-1.0 },
-		{-1.0, 1.0, 1.0 },
-	},
-	{
-		{-1.0,-1.0,-1.0 },
-		{-1.0,-1.0, 1.0 },
-		{-1.0, 1.0, 1.0 },
-	},
-	{ // top face
-		{-1.0,-1.0,-1.0 },
-		{ 1.0,-1.0,-1.0 },
-		{ 1.0,-1.0, 1.0 },
-	},
-	{
-		{-1.0,-1.0,-1.0 },
-		{ 1.0,-1.0, 1.0 },
-		{-1.0,-1.0, 1.0 },
-	},
-	{ // bottom face
-		{-1.0, 1.0,-1.0 },
-		{ 1.0, 1.0, 1.0 },
-		{ 1.0, 1.0,-1.0 },
-	},
-	{
-		{-1.0, 1.0,-1.0 },
-		{-1.0, 1.0, 1.0 },
-		{ 1.0, 1.0, 1.0 },
-	},
+	return true
 }
 
 transform :: proc(vertex: [3]f64, by: matrix[4, 4]f64) -> [3]f64 {
@@ -237,10 +188,17 @@ draw_triangle_colored :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, colors: [3
 	return triangle_screen_coords
 }
 
-draw :: proc(app: ^glue.android_app) {
+draw :: proc(app: ^glue.android_app, state: ^State) {
 	if app.window == nil do return
 
 	state := (^State)(app.userData)
+
+	bg_color := Color {
+		0xF0,
+		u8(state.last_touch_pos.x*255/state.window_size.x),
+		u8(state.last_touch_pos.y*255/state.window_size.y),
+		0xFF,
+	}
 
 	android.ANativeWindow_setBuffersGeometry(app.window, 0, 0, .R8G8B8A8_UNORM)
 	buffer: android.ANativeWindow_Buffer
@@ -296,11 +254,11 @@ draw :: proc(app: ^glue.android_app) {
 		if i < 2 {
 			coords := draw_triangle_colored(
 				&state.canvas3d, screenspace,
-				{state.bg_color,state.bg_color,state.bg_color},
+				{bg_color,bg_color,bg_color},
 			)
 			draw_triangle_outline(
 				&state.canvas, coords*THREEDEE_GRAPHICS_SCALE,
-				state.bg_color,
+				bg_color,
 			)
 		} else {
 			coords := draw_triangle_colored(
