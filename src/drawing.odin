@@ -15,6 +15,21 @@ color_blend :: #force_inline proc(bg_color, fg_color: Color) -> Color {
 
 Point :: [2]int
 
+blit :: proc(canvas: ^Canvas, bitmap: [$H][$W]Color, pos: Point) {
+	ensure(pos.x >= 0 && pos.y >= 0)
+
+	for y in 0..<H {
+		sy := pos.y+y
+		if sy >= canvas.height do break
+		for x in 0..<W {
+			sx := pos.x+x
+			if sx >= canvas.width do break
+
+			canvas_draw_pixel_unsafe(canvas, sx, sy, bitmap[y][x])
+		}
+	}
+}
+
 draw_line :: proc(canvas: ^Canvas, p1, p2: Point, color: Color) {
 	p1, p2 := p1, p2
 	if p1.x > p2.x {

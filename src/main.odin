@@ -19,6 +19,7 @@ State :: struct {
 	app_has_been_init: bool,
 	should_quit: bool,
 	last_frame_time_nanos: i64,
+	last_draw_nanos: time.Duration,
 
 	ctx: runtime.Context,
 
@@ -108,10 +109,6 @@ frame_cb :: proc"c"(frame_time_nanos: i64, data: rawptr) {
 }
 
 process :: proc(app: ^glue.android_app, state: ^State, dt_nsec: i64) {
-	fps := 1_000_000_000 / dt_nsec
-
-	log.info("In frame callback! FPS:", fps)
-
 	draw(app, state)
 }
 
@@ -241,10 +238,29 @@ draw_triangle_colored :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, colors: [3
 	return triangle_screen_coords
 }
 
+draw_fps :: proc(canvas: ^Canvas, fps: int) {
+	at := Point { 128 + 5*8, 128 }
+	if fps > 999999 {
+		blit(canvas, letter_plus, at)
+		return
+	}
+	fps := fps
+	if fps == 0 {
+		blit(canvas, letter_0, at)
+	} else do for fps > 0 {
+		digit := fps%10
+		fps /= 10
+		blit(canvas, number_letter_map[digit], at)
+		at.x -= 8
+	}
+}
+
 draw :: proc(app: ^glue.android_app, state: ^State) {
 	if app.window == nil do return
 
 	state := (^State)(app.userData)
+
+	before_draw := time.tick_now()
 
 	bg_color := Color {
 		0xF0,
@@ -265,16 +281,11 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 		return int((xf+1)/2*f64(w)), int((yf+1)/2*f64(h))
 	}
 
-	canvas_resize(&state.canvas, int(buffer.width), int(buffer.height))
-	canvas3d_resize(&state.canvas3d, int(buffer.width)/THREEDEE_GRAPHICS_SCALE, int(buffer.height)/THREEDEE_GRAPHICS_SCALE)
+	canvas_resize(&state.canvas, int(buffer.width), int(buffer.height), preserve_content=false)
+	canvas3d_resize(&state.canvas3d, int(buffer.width)/THREEDEE_GRAPHICS_SCALE, int(buffer.height)/THREEDEE_GRAPHICS_SCALE, preserve_content=false)
 	//fmt.println("drawing:", state.canvas.width, state.canvas.height)
 	canvas_fill(&state.canvas, {150,150,150,255}/*state.bg_color*/)
-	for y in 0..<state.canvas3d.height-1 {
-		for x in 0..<state.canvas3d.width-1 {
-			#force_inline canvas_put_pixel_unsafe(&state.canvas3d, x, y, {})
-			#force_inline canvas_put_depth_unsafe(&state.canvas3d, x, y, 1)
-		}
-	}
+	canvas3d_reset(&state.canvas3d)
 
 	pos_ratio := ([2]f64)(state.last_touch_pos)/[2]f64{f64(state.canvas.width),f64(state.canvas.height)}
 	theta_y := (-math.TAU/8)*(1-pos_ratio.x) + (math.TAU/8)*pos_ratio.x
@@ -379,10 +390,19 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 		{500,750},
 	}, {255,255,255,127}, debug=true)
 
+	if state.last_draw_nanos > 0 {
+		fps := 1_000_000_000 / int(state.last_draw_nanos)
+		draw_fps(&state.canvas, fps)
+	}
+
 	pixels := ([^]Color)(buffer.bits)
 	for y in 0..<state.canvas.height {
 		for x in 0..<state.canvas.width {
 			pixels[y*int(buffer.stride) + x] = state.canvas.data[y*state.canvas.stride + x]
 		}
 	}
+	draw_time := time.tick_diff(before_draw, time.tick_now())
+	state.last_draw_nanos = draw_time
+
+	log.info("draw fps:", 1_000_000_000 / int(draw_time), "time:", draw_time)
 }

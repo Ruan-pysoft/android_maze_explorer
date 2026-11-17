@@ -18,7 +18,12 @@ canvas_make :: proc(width, height, stride: int, allocator := context.allocator) 
 canvas3d_make :: proc(width, height, stride: int, allocator := context.allocator) -> Canvas3D {
 	return { canvas_make(width, height, stride, allocator), make([]f64, stride*height, allocator=allocator) }
 }
-canvas_resize :: proc(canvas: ^Canvas, width, height: int, allocator := context.allocator) {
+canvas_resize :: proc(
+	canvas: ^Canvas,
+	width, height: int,
+	allocator := context.allocator,
+	preserve_content := true,
+) {
 	if width <= canvas.stride && height <= len(canvas.data)/canvas.stride {
 		canvas.width = width
 		canvas.height = height
@@ -31,16 +36,25 @@ canvas_resize :: proc(canvas: ^Canvas, width, height: int, allocator := context.
 		canvas.stride = max(canvas.width, canvas.stride)
 		new_size := canvas.stride*max(canvas.height, old_height)
 		new_data := make([]Color, new_size, allocator=allocator)
-		for y in 0..<min(old_height, height) {
-			for x in 0..<min(old_width, width) {
-				new_data[y*canvas.stride + x] = canvas.data[y*old_stride + x]
+		if preserve_content {
+			for y in 0..<min(old_height, height) {
+				for x in 0..<min(old_width, width) {
+					new_idx := y*canvas.stride + x
+					old_idx := y*old_stride + x
+					new_data[new_idx] = canvas.data[old_idx]
+				}
 			}
 		}
 		delete(canvas.data)
 		canvas.data = new_data
 	}
 }
-canvas3d_resize :: proc(canvas: ^Canvas3D, width, height: int, allocator := context.allocator) {
+canvas3d_resize :: proc(
+	canvas: ^Canvas3D,
+	width, height: int,
+	allocator := context.allocator,
+	preserve_content := true,
+) {
 	if width <= canvas.stride && height <= len(canvas.data)/canvas.stride {
 		canvas.width = width
 		canvas.height = height
@@ -54,10 +68,14 @@ canvas3d_resize :: proc(canvas: ^Canvas3D, width, height: int, allocator := cont
 		new_size := canvas.stride*max(canvas.height, old_height)
 		new_data := make([]Color, new_size, allocator=allocator)
 		new_depth := make([]f64, new_size, allocator=allocator)
-		for y in 0..<min(old_height, height) {
-			for x in 0..<min(old_width, width) {
-				new_data[y*canvas.stride + x] = canvas.data[y*old_stride + x]
-				new_depth[y*canvas.stride + x] = canvas.depth[y*old_stride + x]
+		if preserve_content {
+			for y in 0..<min(old_height, height) {
+				for x in 0..<min(old_width, width) {
+					new_idx := y*canvas.stride + x
+					old_idx := y*old_stride + x
+					new_data[new_idx] = canvas.data[old_idx]
+					new_depth[new_idx] = canvas.depth[old_idx]
+				}
 			}
 		}
 		delete(canvas.data)
