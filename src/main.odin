@@ -288,16 +288,20 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 	//canvas_fill(&state.canvas, /*state.bg_color*/)
 	canvas3d_reset(&state.canvas3d)
 
+	time_s := f64(time.tick_now()._nsec / 1_000_000) / 1_000
+
 	pos_ratio := ([2]f64)(state.last_touch_pos)/[2]f64{f64(canvas.width),f64(canvas.height)}
-	theta_y := (-math.TAU/8)*(1-pos_ratio.x) + (math.TAU/8)*pos_ratio.x
-	theta_x := (-math.TAU/8)*(1-pos_ratio.y) + (math.TAU/8)*pos_ratio.y
+	theta_y := math.mod(time_s, math.TAU)//(-math.TAU/8)*(1-pos_ratio.x) + (math.TAU/8)*pos_ratio.x
+	theta_x := math.mod(time_s*0.1, math.TAU)//(-math.TAU/8)*(1-pos_ratio.y) + (math.TAU/8)*pos_ratio.y
+	bob := math.sin(time_s*1.75) * 0.4
 
 	trans := linalg.matrix4_translate_f64({-0.5, 4, -3})
+	bob_trans := linalg.matrix4_translate_f64({0,bob,0})
 	rot_y := linalg.matrix4_rotate_f64(theta_y, {0,1,0})
 	rot_x := linalg.matrix4_rotate_f64(theta_x, {1,0,0})
 	view := linalg.matrix4_look_at_f64({0,0,-12}, {-0.5, 4, -3}, {0,1,0})
 	proj := linalg.matrix4_perspective_f64(math.TAU/6, f64(state.canvas3d.width)/f64(state.canvas3d.height), 1, 1000)
-	cube_trans := view*trans*rot_x*rot_y
+	cube_trans := view*bob_trans*trans*rot_y*rot_x
 	floor_trans := view*trans
 
 	outlines: [dynamic; 25]struct{triag:Triangle2D,color:Color}
@@ -326,9 +330,15 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 			oc := touch_color.rgb/4
 			append(&outlines, {coords,{oc.r,oc.g,oc.b,255}})
 		} else {
+			touchy_color := Color {
+				u8(int(color.r)*2/3 + int(touch_color.r)/3),
+				u8(int(color.g)*2/3 + int(touch_color.g)/3),
+				u8(int(color.b)*2/3 + int(touch_color.b)/3),
+				255,
+			}
 			coords := draw_triangle_colored(
 				&state.canvas3d, screenspace,
-				{color,color,color},
+				{color,color,touchy_color},
 			)
 			oc := color.rgb/4
 			append(&outlines, {coords,{oc.r,oc.g,oc.b,255}})
