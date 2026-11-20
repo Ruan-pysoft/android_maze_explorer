@@ -15,6 +15,13 @@ import "core:time"
 
 THREEDEE_GRAPHICS_SCALE :: 2
 
+Pointer_State :: struct {
+	id: i32,
+	initial_pos: [2]int,
+	current_pos: [2]int,
+	down: bool,
+}
+
 State :: struct {
 	app_has_been_init: bool,
 	should_quit: bool,
@@ -23,7 +30,7 @@ State :: struct {
 
 	ctx: runtime.Context,
 
-	last_touch_pos: [2]int,
+	look_pointer: Pointer_State,
 
 	window_size: [2]int,
 	window_size_changed: bool,
@@ -152,19 +159,60 @@ on_input_event :: proc(
 		return false
 	}
 
-	#partial switch android.AMotionEvent_getAction(event).action {
-	case .DOWN, .MOVE:
-		state := (^State)(app.userData)
+	state := (^State)(app.userData)
+	w, h := int(android.ANativeWindow_getWidth(app.window)), int(android.ANativeWindow_getHeight(app.window))
 
-		w, h := int(android.ANativeWindow_getWidth(app.window)), int(android.ANativeWindow_getHeight(app.window))
+	#partial switch android.AMotionEvent_getAction(event).action {
+	case .DOWN:
+		// TODO: iterate over pointers in getPointerCount
+		if state.look_pointer.down do break
+		touch_pos := [2]int {
+			int(android.AMotionEvent_getX(event, 0)),
+			int(android.AMotionEvent_getY(event, 0)),
+		}
+		state.look_pointer = {
+			id = android.AMotionEvent_getPointerId(event, 0),
+			initial_pos = {
+				clamp(touch_pos.x, 0, w),
+				clamp(touch_pos.y, 0, h),
+			},
+			down = true,
+		}
+		state.look_pointer.current_pos = state.look_pointer.initial_pos
+	case .MOVE:
+		//idx := android.AMotionEvent_findPointerIndex(event, state.look_pointer.id)
+		idx := i32(-1)
+		for i in 0..<android.AMotionEvent_getPointerCount(event) {
+			id := android.AMotionEvent_getPointerId(event, i)
+			if id == state.look_pointer.id {
+				idx = i32(i)
+			}
+		}
+		if idx == -1 do break
+		touch_pos := [2]int {
+			int(android.AMotionEvent_getX(event, uint(idx))),
+			int(android.AMotionEvent_getY(event, uint(idx))),
+		}
+		state.look_pointer.current_pos = {
+			clamp(touch_pos.x, 0, w),
+			clamp(touch_pos.y, 0, h),
+		}
+	case .CANCEL, .UP:
+		for i in 0..<android.AMotionEvent_getPointerCount(event) {
+			id := android.AMotionEvent_getPointerId(event, i)
+			if id == state.look_pointer.id {
+				state.look_pointer.down = false
+			}
+		}
+	/*case .DOWN, .MOVE:
+
 		state.last_touch_pos = {
 			int(android.AMotionEvent_getX(event, 0)),
 			int(android.AMotionEvent_getY(event, 0)),
 		}
 		state.last_touch_pos = {
-			clamp(state.last_touch_pos.x, 0, w),
-			clamp(state.last_touch_pos.y, 0, h),
 		}
+	*/
 	}
 	return true
 }
@@ -250,7 +298,7 @@ draw_triangle_colored :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, colors: [3
 
 	return triangle_screen_coords
 }
-draw_triangle_img :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, tex: [3][2]int, img: Image, tints: [3]Color) -> [3][2]int {
+draw_triangle_img :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, tex: [3][2]int, img: Image) -> [3][2]int {
 	float_to_screen :: proc(w,h:int, posf:[2]f64) -> (posi: [2]int) {
 		// TODO: 1 -> w or h, it should map to w-1 or h-1?
 		return auto_cast((posf+1)/2 * [2]f64{f64(w),f64(h)})
@@ -315,18 +363,7 @@ draw_triangle_img :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, tex: [3][2]int
 				tex[1]*w1 +
 				tex[2]*w2 \
 			)/D % [2]int { img.w, img.h }
-			tint := Color((
-				([4]int)(tints[0])*w0 +
-				([4]int)(tints[1])*w1 +
-				([4]int)(tints[2])*w2 \
-			)/D)
 			color := img.data[tex_coords.y*img.w + tex_coords.x]
-			color = {
-				u8(int(color.r)*int(tint.r)/255),
-				u8(int(color.g)*int(tint.g)/255),
-				u8(int(color.b)*int(tint.b)/255),
-				color.a,
-			}
 
 			if canvas_draw_depth_unsafe(canvas, x, y, depth) {
 				canvas_draw_pixel_unsafe(canvas, x, y, color)
@@ -368,13 +405,6 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 
 	before_draw := time.tick_now()
 
-	touch_color := Color {
-		0xF0,
-		u8(state.last_touch_pos.x*255/state.window_size.x),
-		u8(state.last_touch_pos.y*255/state.window_size.y),
-		0xFF,
-	}
-
 	canvas := Canvas {
 		data = transmute([]Color) runtime.Raw_Slice { buffer.bits, int(buffer.width*buffer.height) },
 		width = int(buffer.width),
@@ -389,9 +419,8 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 
 	time_s := f64(time.tick_now()._nsec / 1_000_000) / 1_000
 
-	pos_ratio := ([2]f64)(state.last_touch_pos)/[2]f64{f64(canvas.width),f64(canvas.height)}
-	theta_y := math.mod(time_s, math.TAU)//(-math.TAU/8)*(1-pos_ratio.x) + (math.TAU/8)*pos_ratio.x
-	theta_x := math.mod(time_s*0.1, math.TAU)//(-math.TAU/8)*(1-pos_ratio.y) + (math.TAU/8)*pos_ratio.y
+	theta_y := math.mod(time_s, math.TAU)
+	theta_x := math.mod(time_s*0.1, math.TAU)
 	bob := math.sin(time_s*1.75) * 0.4
 
 	trans := linalg.matrix4_translate_f64({-0.5, 4, -3})
@@ -422,39 +451,25 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 		color := Color {r, g, 150, 255}
 
 		if i == 0 {
-			/*coords := draw_triangle_colored(
-				&state.canvas3d, screenspace,
-				{touch_color,touch_color,touch_color},
-			)*/
 			coords := draw_triangle_img(
 				&state.canvas3d, screenspace,
 				{ { 15, 15 }, { 15, 0 }, { 0, 15 } },
 				state.wood_block_texture,
-				{touch_color,touch_color,touch_color},
 			)
-			oc := touch_color.rgb/4
-			append(&outlines, {coords,{oc.r,oc.g,oc.b,255}})
+			append(&outlines, {coords,color})
 		} else if i == 1 {
 			coords := draw_triangle_img(
 				&state.canvas3d, screenspace,
 				{ { 0, 15 }, { 15, 0 }, { 0, 0 } },
 				state.wood_block_texture,
-				{touch_color,touch_color,touch_color},
 			)
-			oc := touch_color.rgb/4
-			append(&outlines, {coords,{oc.r,oc.g,oc.b,255}})
+			append(&outlines, {coords,color})
 		} else {
-			touchy_color := Color {
-				u8(int(color.r)*2/3 + int(touch_color.r)/3),
-				u8(int(color.g)*2/3 + int(touch_color.g)/3),
-				u8(int(color.b)*2/3 + int(touch_color.b)/3),
-				255,
-			}
 			coords := draw_triangle_colored(
 				&state.canvas3d, screenspace,
-				{color,color,touchy_color},
+				{color,color,color},
 			)
-			oc := color.rgb/4
+			oc := color.rgb/3
 			append(&outlines, {coords,{oc.r,oc.g,oc.b,255}})
 		}
 	}
@@ -512,9 +527,9 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 	draw_rect_outline(&canvas, {64,128,256,512}, {0,0,0,255})
 	draw_line(
 		&canvas,
-		{canvas.width/2, canvas.height/2},
-		state.last_touch_pos,
-		{0,0,0,255},
+		state.look_pointer.initial_pos,
+		state.look_pointer.current_pos,
+		{0,0,0,255} if state.look_pointer.down else {255,255,255,255},
 	)
 
 	draw_triangle(&canvas, {
