@@ -29,9 +29,14 @@ State :: struct {
 	window_size_changed: bool,
 
 	canvas3d: Canvas3D,
+
+	wood_block_texture: Image,
 }
 
-RENDER_ASAP :: #config(RENDER_ASAP, true)
+Image :: struct {
+	data: []Color,
+	w, h: int,
+}
 
 main :: proc() {
 	context.logger = log.create_console_logger(ident="android-maze-explorer")
@@ -39,55 +44,63 @@ main :: proc() {
 	state: State
 	state.ctx = context
 
+	raw_img, err := os.read_entire_file(
+		"/android_asset/wood_block.bmp",
+		context.allocator,
+	)
+	if err != nil {
+		// TODO: display error somehow?
+		log.panicf("Failed reading texture file: %v", err)
+	}
+	raw_pixels := transmute([]Color) runtime.Raw_Slice {
+		raw_data(raw_img[len(raw_img)-257:len(raw_img)-1]),
+		64,
+	}
+	for &pixel in raw_pixels {
+		pixel = pixel.abgr
+	}
+	state.wood_block_texture = Image {
+		data = raw_pixels,
+		w = 8,
+		h = 8,
+	}
+	ensure(len(state.wood_block_texture.data) == state.wood_block_texture.w*state.wood_block_texture.h)
+
 	app := glue.app()
 	app.userData = &state
 	app.onAppCmd = on_app_cmd
 	app.onInputEvent = auto_cast on_input_event
 
-	when RENDER_ASAP {
-		for app.destroyRequested == 0 && !state.should_quit && !state.app_has_been_init {
+	for app.destroyRequested == 0 && !state.should_quit && !state.app_has_been_init {
+		source: ^glue.android_poll_source
+		if android.ALooper_pollOnce(
+			-1,
+			nil,
+			nil,
+			(^rawptr)(&source),
+		) >= 0 && source != nil {
+			source.process(app, source)
+		}
+	}
+	for app.destroyRequested == 0 && !state.should_quit {
+		for app.destroyRequested == 0 && !state.should_quit {
 			source: ^glue.android_poll_source
-			if android.ALooper_pollOnce(
-				-1,
+			poll_res := android.ALooper_pollOnce(
+				0,
 				nil,
 				nil,
 				(^rawptr)(&source),
-			) >= 0 && source != nil {
+			)
+			if poll_res >= 0 && source != nil {
 				source.process(app, source)
-			}
+			} else if poll_res < 0 do break
 		}
-		for app.destroyRequested == 0 && !state.should_quit {
-			for app.destroyRequested == 0 && !state.should_quit {
-				source: ^glue.android_poll_source
-				poll_res := android.ALooper_pollOnce(
-					0,
-					nil,
-					nil,
-					(^rawptr)(&source),
-				)
-				if poll_res >= 0 && source != nil {
-					source.process(app, source)
-				} else if poll_res < 0 do break
-			}
 
-			time_nsec := time.tick_now()._nsec
-			dt_nsec := time_nsec - state.last_frame_time_nanos
-			state.last_frame_time_nanos = time_nsec
+		time_nsec := time.tick_now()._nsec
+		dt_nsec := time_nsec - state.last_frame_time_nanos
+		state.last_frame_time_nanos = time_nsec
 
-			process(app, &state, dt_nsec)
-		}
-	} else {
-		for app.destroyRequested == 0 && !state.should_quit {
-			source: ^glue.android_poll_source
-			if android.ALooper_pollOnce(
-				-1,
-				nil,
-				nil,
-				(^rawptr)(&source),
-			) >= 0 && source != nil {
-				source.process(app, source)
-			}
-		}
+		process(app, &state, dt_nsec)
 	}
 }
 
@@ -128,11 +141,6 @@ on_app_cmd :: proc(app: ^glue.android_app, cmd: i32) {
 	}
 	if cmd == glue.APP_CMD_INIT_WINDOW {
 		state.app_has_been_init = true
-		when !RENDER_ASAP do android.AChoreographer_postFrameCallback64(
-			android.AChoreographer_getInstance(),
-			frame_cb,
-			app,
-		)
 	}
 }
 
@@ -148,9 +156,14 @@ on_input_event :: proc(
 	case .DOWN, .MOVE:
 		state := (^State)(app.userData)
 
+		w, h := int(android.ANativeWindow_getWidth(app.window)), int(android.ANativeWindow_getHeight(app.window))
 		state.last_touch_pos = {
 			int(android.AMotionEvent_getX(event, 0)),
 			int(android.AMotionEvent_getY(event, 0)),
+		}
+		state.last_touch_pos = {
+			clamp(state.last_touch_pos.x, 0, w),
+			clamp(state.last_touch_pos.y, 0, h),
 		}
 	}
 	return true
@@ -228,6 +241,92 @@ draw_triangle_colored :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, colors: [3
 				([4]int)(colors[1])*w1 +
 				([4]int)(colors[2])*w2 \
 			)/D)
+
+			if canvas_draw_depth_unsafe(canvas, x, y, depth) {
+				canvas_draw_pixel_unsafe(canvas, x, y, color)
+			}
+		}
+	}
+
+	return triangle_screen_coords
+}
+draw_triangle_img :: proc(canvas: ^Canvas3D, triangle: [3][3]f64, tex: [3][2]int, img: Image, tints: [3]Color) -> [3][2]int {
+	float_to_screen :: proc(w,h:int, posf:[2]f64) -> (posi: [2]int) {
+		// TODO: 1 -> w or h, it should map to w-1 or h-1?
+		return auto_cast((posf+1)/2 * [2]f64{f64(w),f64(h)})
+	}
+	triangle_screen_coords := [3][2]int {
+		float_to_screen(canvas.width, canvas.height, triangle[0].xy),
+		float_to_screen(canvas.width, canvas.height, triangle[1].xy),
+		float_to_screen(canvas.width, canvas.height, triangle[2].xy),
+	}
+	triangle_depth := [3]f64 { triangle[0].z, triangle[1].z, triangle[2].z }
+
+	x1 := triangle_screen_coords[0].x
+	x2 := triangle_screen_coords[1].x
+	x3 := triangle_screen_coords[2].x
+	y1 := triangle_screen_coords[0].y
+	y2 := triangle_screen_coords[1].y
+	y3 := triangle_screen_coords[2].y
+
+	edge1 := [2]int { x2-x1, y2-y1 }
+	edge2 := [2]int { x3-x1, y3-y1 }
+	D := edge1.x*edge2.y - edge2.x*edge1.y
+	when ONLY_CC_TRIANGLES do if D <= 0 do return {}
+	else do if D == 0 do return {}
+	factor := D < 0 ? -1 : 1
+	D *= factor
+
+	xmin := min(x1, x2, x3)
+	ymin := min(y1, y2, y3)
+	xmax := max(x1, x2, x3)
+	ymax := max(y1, y2, y3)
+
+	xmin = clamp(xmin, 0, canvas.width-1)
+	ymin = clamp(ymin, 0, canvas.height-1)
+	xmax = clamp(xmax, 0, canvas.width-1)
+	ymax = clamp(ymax, 0, canvas.height-1)
+
+	for y in ymin..=ymax {
+		l1 := ((xmin-x1)*edge2.y - (y-y1)*edge2.x)*factor
+		l2 := (-(xmin-x1)*edge1.y + (y-y1)*edge1.x)*factor
+		for x in xmin..=xmax {
+			//l1 := ((x-x1)*edge2.y - (y-y1)*edge2.x)*factor
+			//l2 := (-(x-x1)*edge1.y + (y-y1)*edge1.x)*factor
+			defer {
+				l1 += edge2.y*factor
+				l2 -= edge1.y*factor
+			}
+
+			if l1 < 0 || l2 < 0 || D < l1+l2 do continue
+
+			w0 := D-l1-l2
+			w1 := l1
+			w2 := l2
+
+			depth := (
+				triangle_depth[0]*f64(w0) +
+				triangle_depth[1]*f64(w1) +
+				triangle_depth[2]*f64(w2) \
+			)/f64(D)
+			if depth < -1 || 1 < depth do continue
+			tex_coords := (
+				tex[0]*w0 +
+				tex[1]*w1 +
+				tex[2]*w2 \
+			)/D % [2]int { img.w, img.h }
+			tint := Color((
+				([4]int)(tints[0])*w0 +
+				([4]int)(tints[1])*w1 +
+				([4]int)(tints[2])*w2 \
+			)/D)
+			color := img.data[tex_coords.y*img.w + tex_coords.x]
+			color = {
+				u8(int(color.r)*int(tint.r)/255),
+				u8(int(color.g)*int(tint.g)/255),
+				u8(int(color.b)*int(tint.b)/255),
+				color.a,
+			}
 
 			if canvas_draw_depth_unsafe(canvas, x, y, depth) {
 				canvas_draw_pixel_unsafe(canvas, x, y, color)
@@ -322,9 +421,24 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 		g := u8(200 - 200*i/(len(cube)-1))
 		color := Color {r, g, 150, 255}
 
-		if i < 2 {
-			coords := draw_triangle_colored(
+		if i == 0 {
+			/*coords := draw_triangle_colored(
 				&state.canvas3d, screenspace,
+				{touch_color,touch_color,touch_color},
+			)*/
+			coords := draw_triangle_img(
+				&state.canvas3d, screenspace,
+				{ { 15, 15 }, { 15, 0 }, { 0, 15 } },
+				state.wood_block_texture,
+				{touch_color,touch_color,touch_color},
+			)
+			oc := touch_color.rgb/4
+			append(&outlines, {coords,{oc.r,oc.g,oc.b,255}})
+		} else if i == 1 {
+			coords := draw_triangle_img(
+				&state.canvas3d, screenspace,
+				{ { 0, 15 }, { 15, 0 }, { 0, 0 } },
+				state.wood_block_texture,
 				{touch_color,touch_color,touch_color},
 			)
 			oc := touch_color.rgb/4
@@ -416,6 +530,4 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 
 	draw_time := time.tick_diff(before_draw, time.tick_now())
 	state.last_draw_nanos = draw_time
-
-	log.info("draw fps:", 1_000_000_000 / int(draw_time), "time:", draw_time)
 }

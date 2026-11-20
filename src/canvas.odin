@@ -106,7 +106,9 @@ canvas_draw_depth_unsafe :: proc(canvas: ^Canvas3D, x, y: int, depth: f64) -> (o
 	#force_inline canvas_put_depth_unsafe(canvas, x, y, depth)
 	return true
 }
-canvas_draw_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color) {
+import "core:fmt"
+canvas_draw_pixel :: proc(canvas: ^Canvas, x, y: int, color: Color, loc := #caller_location) {
+	if y >= canvas.height || x >= canvas.width do fmt.panicf("",loc)
 	if color.a == 255 do canvas.data[y*canvas.stride + x] = color
 	else if color.a == 0 do return
 	else {
