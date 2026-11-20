@@ -18,6 +18,7 @@
   <activity
    android:name="org.odin_lang.OdinActivity"
    android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode"
+   android:screenOrientation="sensorLandscape"
    android:exported="true">
 
    <meta-data
