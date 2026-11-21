@@ -217,6 +217,35 @@ on_input_event :: proc(
 	return true
 }
 
+draw_control_circle :: proc(
+	canvas: ^Canvas,
+	centre: [2]int,
+	r_out, r_in, thick: int,
+	color_fillin, color_outline: Color,
+) {
+	r_outline := r_out + thick
+	rsq_outline := r_outline*r_outline
+	rsq_out := r_out*r_out
+	rsq_in := r_in*r_in
+	for y in centre.y-r_outline..=centre.y+r_outline {
+		if y < 0 || canvas.height <= y do continue
+		ysq := (y-centre.y)*(y-centre.y)
+
+		for x in centre.x-r_outline..=centre.x+r_outline {
+			if x < 0 || canvas.width <= x do continue
+			xsq := (x-centre.x)*(x-centre.x)
+
+			rsq := xsq + ysq
+
+			if rsq <= rsq_in {
+				canvas_draw_pixel_unsafe(canvas, x, y, color_fillin)
+			} else if rsq_out <= rsq && rsq <= rsq_outline {
+				canvas_draw_pixel_unsafe(canvas, x, y, color_outline)
+			}
+		}
+	}
+}
+
 transform :: proc(vertex: [3]f64, by: matrix[4, 4]f64) -> [3]f64 {
 	return (by*[4]f64{vertex.x, vertex.y, vertex.z, 1}).xyz
 }
@@ -537,6 +566,18 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 		{750,500},
 		{500,750},
 	}, {255,255,255,127}, debug=true)
+
+	if state.look_pointer.down {
+		delta := state.look_pointer.current_pos - state.look_pointer.initial_pos
+		rsq_dist := delta.x*delta.x + delta.y*delta.y
+		r_outer := 128
+		rsq_inner := clamp(rsq_dist, 0, (r_outer-1)*(r_outer-1))
+		draw_control_circle(&canvas,
+			state.look_pointer.initial_pos,
+			128, int(math.sqrt(f64(rsq_inner))), 10,
+			{180,190,210,160}, {0,0,0,255},
+		)
+	}
 
 	if state.last_draw_nanos > 0 {
 		fps := 1_000_000_000 / int(state.last_draw_nanos)
