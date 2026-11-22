@@ -30,6 +30,7 @@ State :: struct {
 
 	ctx: runtime.Context,
 
+	move_pointer: Pointer_State,
 	look_pointer: Pointer_State,
 
 	window_size: [2]int,
@@ -162,57 +163,90 @@ on_input_event :: proc(
 	state := (^State)(app.userData)
 	w, h := int(android.ANativeWindow_getWidth(app.window)), int(android.ANativeWindow_getHeight(app.window))
 
-	#partial switch android.AMotionEvent_getAction(event).action {
-	case .DOWN:
-		// TODO: iterate over pointers in getPointerCount
-		if state.look_pointer.down do break
+	action := android.AMotionEvent_getAction(event)
+	#partial switch action.action {
+	case .DOWN, .POINTER_DOWN:
+		idx := uint(action.pointer_index)
+		id := android.AMotionEvent_getPointerId(event, idx)
 		touch_pos := [2]int {
-			int(android.AMotionEvent_getX(event, 0)),
-			int(android.AMotionEvent_getY(event, 0)),
+			int(android.AMotionEvent_getX(event, idx)),
+			int(android.AMotionEvent_getY(event, idx)),
 		}
-		state.look_pointer = {
-			id = android.AMotionEvent_getPointerId(event, 0),
-			initial_pos = {
-				clamp(touch_pos.x, 0, w),
-				clamp(touch_pos.y, 0, h),
-			},
-			down = true,
+		if touch_pos.x < w/2 {
+			if state.look_pointer.down do break
+			state.look_pointer = {
+				id = id,
+				initial_pos = {
+					clamp(touch_pos.x, 0, w),
+					clamp(touch_pos.y, 0, h),
+				},
+				down = true,
+			}
+			state.look_pointer.current_pos = state.look_pointer.initial_pos
+		} else {
+			if state.move_pointer.down do break
+			state.move_pointer = {
+				id = id,
+				initial_pos = {
+					clamp(touch_pos.x, 0, w),
+					clamp(touch_pos.y, 0, h),
+				},
+				down = true,
+			}
+			state.move_pointer.current_pos = state.move_pointer.initial_pos
 		}
-		state.look_pointer.current_pos = state.look_pointer.initial_pos
 	case .MOVE:
 		//idx := android.AMotionEvent_findPointerIndex(event, state.look_pointer.id)
-		idx := i32(-1)
+		idx_look := i32(-1)
+		idx_move := i32(-1)
 		for i in 0..<android.AMotionEvent_getPointerCount(event) {
 			id := android.AMotionEvent_getPointerId(event, i)
 			if id == state.look_pointer.id {
-				idx = i32(i)
+				idx_look = i32(i)
+			}
+			if id == state.move_pointer.id {
+				idx_move = i32(i)
 			}
 		}
-		if idx == -1 do break
-		touch_pos := [2]int {
-			int(android.AMotionEvent_getX(event, uint(idx))),
-			int(android.AMotionEvent_getY(event, uint(idx))),
+		if idx_look != -1 {
+			touch_pos := [2]int {
+				int(android.AMotionEvent_getX(event, uint(idx_look))),
+				int(android.AMotionEvent_getY(event, uint(idx_look))),
+			}
+			state.look_pointer.current_pos = {
+				clamp(touch_pos.x, 0, w),
+				clamp(touch_pos.y, 0, h),
+			}
 		}
-		state.look_pointer.current_pos = {
-			clamp(touch_pos.x, 0, w),
-			clamp(touch_pos.y, 0, h),
+		if idx_move != -1 {
+			touch_pos := [2]int {
+				int(android.AMotionEvent_getX(event, uint(idx_move))),
+				int(android.AMotionEvent_getY(event, uint(idx_move))),
+			}
+			state.move_pointer.current_pos = {
+				clamp(touch_pos.x, 0, w),
+				clamp(touch_pos.y, 0, h),
+			}
 		}
-	case .CANCEL, .UP:
+	case .CANCEL:
 		for i in 0..<android.AMotionEvent_getPointerCount(event) {
 			id := android.AMotionEvent_getPointerId(event, i)
 			if id == state.look_pointer.id {
 				state.look_pointer.down = false
 			}
+			if id == state.move_pointer.id {
+				state.move_pointer.down = false
+			}
 		}
-	/*case .DOWN, .MOVE:
-
-		state.last_touch_pos = {
-			int(android.AMotionEvent_getX(event, 0)),
-			int(android.AMotionEvent_getY(event, 0)),
+	case .UP, .POINTER_UP:
+		idx := uint(action.pointer_index)
+		id := android.AMotionEvent_getPointerId(event, idx)
+		if id == state.look_pointer.id {
+			state.look_pointer.down = false
 		}
-		state.last_touch_pos = {
+		if id == state.move_pointer.id {
+			state.move_pointer.down = false
 		}
-	*/
 	}
 	return true
 }
@@ -554,12 +588,6 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 
 	draw_rect(&canvas, {10,16,64,128}, {0,100,200,255})
 	draw_rect_outline(&canvas, {64,128,256,512}, {0,0,0,255})
-	draw_line(
-		&canvas,
-		state.look_pointer.initial_pos,
-		state.look_pointer.current_pos,
-		{0,0,0,255} if state.look_pointer.down else {255,255,255,255},
-	)
 
 	draw_triangle(&canvas, {
 		{550,550},
@@ -576,6 +604,17 @@ draw :: proc(app: ^glue.android_app, state: ^State) {
 			state.look_pointer.initial_pos,
 			128, int(math.sqrt(f64(rsq_inner))), 10,
 			{180,190,210,160}, {0,0,0,255},
+		)
+	}
+	if state.move_pointer.down {
+		delta := state.move_pointer.current_pos - state.move_pointer.initial_pos
+		rsq_dist := delta.x*delta.x + delta.y*delta.y
+		r_outer := 128
+		rsq_inner := clamp(rsq_dist, 0, (r_outer-1)*(r_outer-1))
+		draw_control_circle(&canvas,
+			state.move_pointer.initial_pos,
+			128, int(math.sqrt(f64(rsq_inner))), 10,
+			{180,190,210,160}, {0,0,100,255},
 		)
 	}
 
